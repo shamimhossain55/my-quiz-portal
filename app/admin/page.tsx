@@ -1,722 +1,964 @@
 "use client";
-import { useState, useEffect } from "react";
+import { useEffect, useState, useCallback } from "react";
+import {
+  collection, getDocs, doc, updateDoc, deleteDoc,
+  setDoc, getDoc, addDoc, writeBatch, query, orderBy, Timestamp
+} from "firebase/firestore";
 import { db, auth } from "@/lib/firebase";
 import { onAuthStateChanged } from "firebase/auth";
-import {
-  collection, getDocs, doc, writeBatch, getDoc, setDoc, deleteDoc, updateDoc, query, orderBy, limit
-} from "firebase/firestore";
+import { useRouter } from "next/navigation";
 
-const ADMIN_EMAIL = "shamimhossain.demo1@gmail.com";
+type Tab = "overview" | "questions" | "subjects" | "users" | "results" | "settings";
 
-type Question = { id: string; q: string; a: string; b: string; c: string; d: string; correct: string };
-type UserAttempt = { uid: string; displayName?: string; email?: string; score: number; timestamp: any };
-type AppUser = { id: string; name?: string; email?: string; total_score?: number; photoURL?: string };
-type ExamConfig = {
-  current_exam_id: string;
-  exam_active: boolean;
-  timer_seconds: number;
-  multiple_attempts: boolean;
-  show_leaderboard: boolean;
+type Question = {
+  id: string; q: string;
+  a: string; b: string; c: string; d: string;
+  correct: "a" | "b" | "c" | "d";
 };
 
-type Tab = "dashboard" | "questions" | "leaderboard" | "users" | "settings";
+type Subject = {
+  id: string; name: string; examId: string;
+  examDate: any; durationMinutes: number;
+  preparation?: { question: string; answer: string }[];
+};
 
-export default function AdminPage() {
-  const [isAdmin, setIsAdmin] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<Tab>("dashboard");
-  const [theme, setTheme] = useState<"light" | "dark">("light");
+type UserData = {
+  id: string; name: string; email: string;
+  total_score: number; photoURL?: string;
+  isAdmin?: boolean; retakeAccess?: boolean;
+};
 
-  // Data states
-  const [questions, setQuestions] = useState<Question[]>([]);
-  const [attempts, setAttempts] = useState<UserAttempt[]>([]);
-  const [users, setUsers] = useState<AppUser[]>([]);
-  const [noticeText, setNoticeText] = useState("");
-  const [examConfig, setExamConfig] = useState<ExamConfig>({
-    current_exam_id: "default_exam",
-    exam_active: true,
-    timer_seconds: 30,
-    multiple_attempts: false,
-    show_leaderboard: true,
-  });
+type Attempt = {
+  id: string; uid: string; examId: string;
+  score: number; total: number;
+  displayName: string; email: string;
+  timestamp: any;
+};
 
-  // UI states
-  const [newJson, setNewJson] = useState("");
-  const [userSearch, setUserSearch] = useState("");
-  const [isUpdating, setIsUpdating] = useState(false);
-  const [isSavingConfig, setIsSavingConfig] = useState(false);
-  const [isSavingNotice, setIsSavingNotice] = useState(false);
-  const [toast, setToast] = useState<{ msg: string; type: "success" | "error" } | null>(null);
+const Spinner = () => (
+  <div className="flex items-center justify-center py-16">
+    <div className="w-8 h-8 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin" />
+  </div>
+);
 
-  const showToast = (msg: string, type: "success" | "error" = "success") => {
-    setToast({ msg, type });
-    setTimeout(() => setToast(null), 3000);
-  };
+const Badge = ({ children, color }: { children: React.ReactNode; color: string }) => (
+  <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold ${color}`}>
+    {children}
+  </span>
+);
 
-  // ✅ থিম লোড ও সেট করা (dark/light) — ড্যাশবোর্ডের সাথে সামঞ্জস্য রেখে
-  useEffect(() => {
-    const saved = typeof window !== "undefined" ? localStorage.getItem("theme") : null;
-    const initial = saved === "dark" ? "dark" : "light";
-    setTheme(initial);
-    document.documentElement.classList.toggle("dark", initial === "dark");
-  }, []);
+// ─── JSON Format Preview Component ───────────────────────────────────────────
+const JsonFormatPreview = ({ type }: { type: "mcq" | "preparation" }) => {
+  const mcqExample = `[
+  {
+    "q": "বাংলাদেশের রাজধানী কোনটি?",
+    "a": "চট্টগ্রাম",
+    "b": "ঢাকা",
+    "c": "সিলেট",
+    "d": "খুলনা",
+    "correct": "b"
+  },
+  {
+    "q": "২ + ২ = ?",
+    "a": "৩",
+    "b": "৫",
+    "c": "৪",
+    "d": "৬",
+    "correct": "c"
+  }
+]`;
 
-  const toggleTheme = () => {
-    const next = theme === "dark" ? "light" : "dark";
-    setTheme(next);
-    document.documentElement.classList.toggle("dark", next === "dark");
-    localStorage.setItem("theme", next);
-  };
+  const prepExample = `[
+  {
+    "question": "মুক্তিযুদ্ধ কত সালে হয়েছিল?",
+    "answer": "১৯৭১ সালে"
+  },
+  {
+    "question": "বাংলাদেশের জাতীয় ফুলের নাম কী?",
+    "answer": "শাপলা"
+  }
+]`;
 
-  useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (user) => {
-      if (user && user.email === ADMIN_EMAIL) {
-        setIsAdmin(true);
-        fetchAll();
-      } else {
-        setIsAdmin(false);
-      }
-      setLoading(false);
-    });
-    return () => unsub();
-  }, []);
+  const fields = type === "mcq"
+    ? [
+        { key: "q", desc: "প্রশ্নের text", required: true },
+        { key: "a", desc: "অপশন A", required: true },
+        { key: "b", desc: "অপশন B", required: true },
+        { key: "c", desc: "অপশন C", required: true },
+        { key: "d", desc: "অপশন D", required: true },
+        { key: "correct", desc: '"a" / "b" / "c" / "d" — সঠিক উত্তর', required: true },
+      ]
+    : [
+        { key: "question", desc: "প্রস্তুতি প্রশ্নের text", required: true },
+        { key: "answer", desc: "প্রশ্নের উত্তর", required: true },
+      ];
 
-  const fetchAll = async () => {
-    await Promise.all([fetchQuestions(), fetchAttempts(), fetchExamConfig(), fetchUsers(), fetchNotice()]);
-  };
+  return (
+    <div className="bg-slate-50 dark:bg-slate-800/60 rounded-xl border border-slate-200 dark:border-slate-700 overflow-hidden mb-3">
+      {/* Header */}
+      <div className="flex items-center gap-2 px-3 py-2 bg-slate-100 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700">
+        <span className="text-xs font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wide">
+          📋 JSON Format — উদাহরণ দেখুন
+        </span>
+      </div>
 
-  const fetchQuestions = async () => {
-    try {
-      const snap = await getDocs(collection(db, "questions"));
-      setQuestions(snap.docs.map(d => ({ id: d.id, ...d.data() } as Question)));
-    } catch (e) { console.error(e); }
-  };
+      {/* Field Table */}
+      <div className="px-3 pt-3 pb-2">
+        <p className="text-[11px] font-bold text-slate-500 dark:text-slate-400 mb-2">প্রতিটি object-এ যা থাকবে:</p>
+        <div className="space-y-1 mb-3">
+          {fields.map(f => (
+            <div key={f.key} className="flex items-start gap-2">
+              <code className="text-[11px] font-bold text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 px-1.5 py-0.5 rounded shrink-0">
+                "{f.key}"
+              </code>
+              <span className="text-[11px] text-slate-500 dark:text-slate-400">{f.desc}</span>
+              {f.required && <span className="text-[10px] text-red-500 font-bold shrink-0">*আবশ্যক</span>}
+            </div>
+          ))}
+        </div>
 
-  const fetchAttempts = async () => {
-    try {
-      const snap = await getDocs(collection(db, "user_attempts"));
-      const list = snap.docs.map(d => d.data() as UserAttempt);
-      list.sort((a, b) => b.score - a.score);
-      setAttempts(list);
-    } catch (e) { console.error(e); }
-  };
+        {/* Code Preview */}
+        <p className="text-[11px] font-bold text-slate-500 dark:text-slate-400 mb-1.5">উদাহরণ JSON:</p>
+        <pre className="text-[10px] leading-relaxed text-green-700 dark:text-green-400 bg-slate-900 dark:bg-slate-950 rounded-lg p-3 overflow-x-auto whitespace-pre-wrap break-words">
+          {type === "mcq" ? mcqExample : prepExample}
+        </pre>
+      </div>
 
-  const fetchExamConfig = async () => {
-    try {
-      const snap = await getDoc(doc(db, "settings", "exam_config"));
-      if (snap.exists()) setExamConfig(snap.data() as ExamConfig);
-    } catch (e) { console.error(e); }
-  };
-
-  const fetchUsers = async () => {
-    try {
-      const snap = await getDocs(collection(db, "users"));
-      const list = snap.docs.map(d => ({ id: d.id, ...d.data() } as AppUser));
-      list.sort((a, b) => (b.total_score || 0) - (a.total_score || 0));
-      setUsers(list);
-    } catch (e) { console.error(e); }
-  };
-
-  const fetchNotice = async () => {
-    try {
-      const snap = await getDoc(doc(db, "settings", "notice"));
-      if (snap.exists()) setNoticeText(snap.data()?.text || "");
-    } catch (e) { console.error(e); }
-  };
-
-  const handleSaveConfig = async () => {
-    setIsSavingConfig(true);
-    try {
-      await setDoc(doc(db, "settings", "exam_config"), examConfig);
-      showToast("✅ সেটিংস সেভ হয়েছে!");
-    } catch (e) {
-      showToast("❌ সেভ করা যায়নি", "error");
-    } finally {
-      setIsSavingConfig(false);
-    }
-  };
-
-  const handleSaveNotice = async () => {
-    setIsSavingNotice(true);
-    try {
-      await setDoc(doc(db, "settings", "notice"), { text: noticeText });
-      showToast("✅ নোটিশ সেভ হয়েছে!");
-    } catch (e) {
-      showToast("❌ নোটিশ সেভ করা যায়নি", "error");
-    } finally {
-      setIsSavingNotice(false);
-    }
-  };
-
-  const handleResetAttempts = async () => {
-    if (!confirm("সব Attempt মুছে ফেলবেন? এটি পূর্বাবস্থায় ফেরানো যাবে না।")) return;
-    try {
-      const snap = await getDocs(collection(db, "user_attempts"));
-      const batch = writeBatch(db);
-      snap.docs.forEach(d => batch.delete(d.ref));
-      await batch.commit();
-      setAttempts([]);
-      showToast("✅ সব Attempt রিসেট হয়েছে!");
-    } catch (e) {
-      showToast("❌ রিসেট করা যায়নি", "error");
-    }
-  };
-
-  const handleReplaceQuestions = async () => {
-    try {
-      const parsed = JSON.parse(newJson);
-      if (!Array.isArray(parsed)) return showToast("JSON অবশ্যই Array [] ফরম্যাটে হতে হবে!", "error");
-      if (!confirm(`${parsed.length}টি নতুন প্রশ্ন যোগ হবে, পুরনো সব মুছে যাবে। নিশ্চিত?`)) return;
-
-      setIsUpdating(true);
-      const existingSnap = await getDocs(collection(db, "questions"));
-      const deleteOps = existingSnap.docs.map(d => ({ type: "delete", id: d.id }));
-      const addOps = parsed.map((q: any) => ({ type: "set", data: q }));
-      const allOps = [...deleteOps, ...addOps];
-
-      for (let i = 0; i < allOps.length; i += 499) {
-        const batch = writeBatch(db);
-        allOps.slice(i, i + 499).forEach((op: any) => {
-          if (op.type === "delete") batch.delete(doc(db, "questions", op.id));
-          else batch.set(doc(collection(db, "questions")), op.data);
-        });
-        await batch.commit();
-      }
-
-      showToast(`✅ ${parsed.length}টি প্রশ্ন আপডেট হয়েছে!`);
-      setNewJson("");
-      fetchQuestions();
-    } catch (e: any) {
-      showToast(e instanceof SyntaxError ? "❌ JSON ফরম্যাট ভুল!" : "❌ সমস্যা হয়েছে: " + e.message, "error");
-    } finally {
-      setIsUpdating(false);
-    }
-  };
-
-  const handleDeleteQuestion = async (id: string) => {
-    if (!confirm("এই প্রশ্নটি মুছে ফেলবেন?")) return;
-    try {
-      await deleteDoc(doc(db, "questions", id));
-      setQuestions(prev => prev.filter(q => q.id !== id));
-      showToast("✅ প্রশ্ন মুছে ফেলা হয়েছে!");
-    } catch (e) {
-      showToast("❌ মুছা যায়নি", "error");
-    }
-  };
-
-  const handleDeleteUser = async (id: string) => {
-    if (!confirm("এই ইউজারের প্রোফাইল ডেটা মুছে ফেলবেন? (অ্যাকাউন্ট লগইন এখনও থাকবে, কিন্তু প্রোফাইল ডেটা মুছে যাবে)")) return;
-    try {
-      await deleteDoc(doc(db, "users", id));
-      setUsers(prev => prev.filter(u => u.id !== id));
-      showToast("✅ ইউজার ডেটা মুছে ফেলা হয়েছে!");
-    } catch (e) {
-      showToast("❌ মুছা যায়নি", "error");
-    }
-  };
-
-  const handleResetUserScore = async (id: string) => {
-    if (!confirm("এই ইউজারের স্কোর ০ করে দেওয়া হবে। নিশ্চিত?")) return;
-    try {
-      await updateDoc(doc(db, "users", id), { total_score: 0 });
-      setUsers(prev => prev.map(u => u.id === id ? { ...u, total_score: 0 } : u));
-      showToast("✅ স্কোর রিসেট হয়েছে!");
-    } catch (e) {
-      showToast("❌ রিসেট করা যায়নি", "error");
-    }
-  };
-
-  const totalAttempts = attempts.length;
-  const avgScore = attempts.length
-    ? Math.round((attempts.reduce((s, a) => s + a.score, 0) / attempts.length / questions.length) * 100)
-    : 0;
-
-  const filteredUsers = users.filter(u =>
-    (u.name || "").toLowerCase().includes(userSearch.toLowerCase()) ||
-    (u.email || "").toLowerCase().includes(userSearch.toLowerCase())
-  );
-
-  if (loading) return (
-    <div className="flex min-h-screen items-center justify-center bg-gray-100 dark:bg-gray-950">
-      <p className="text-gray-500 dark:text-gray-400 font-medium">অ্যাক্সেস যাচাই হচ্ছে...</p>
-    </div>
-  );
-
-  if (!isAdmin) return (
-    <div className="flex min-h-screen items-center justify-center bg-gray-100 dark:bg-gray-950">
-      <div className="text-center">
-        <p className="text-5xl mb-3">🔒</p>
-        <p className="text-red-600 dark:text-red-400 font-bold text-lg">অ্যাক্সেস নেই!</p>
-        <p className="text-gray-500 dark:text-gray-400 text-sm mt-1">শুধুমাত্র Admin এই পেজ দেখতে পারবেন।</p>
+      {/* Tips */}
+      <div className="px-3 pb-3">
+        <div className="flex flex-wrap gap-2 mt-2">
+          <span className="text-[10px] bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400 px-2 py-1 rounded-lg font-bold">
+            ⚠️ Array [ ] দিয়ে শুরু করতে হবে
+          </span>
+          <span className="text-[10px] bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 px-2 py-1 rounded-lg font-bold">
+            💡 একসাথে অনেক প্রশ্ন দেওয়া যাবে
+          </span>
+          {type === "mcq" && (
+            <span className="text-[10px] bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-400 px-2 py-1 rounded-lg font-bold">
+              ✅ correct-এ শুধু a/b/c/d লিখবেন
+            </span>
+          )}
+        </div>
       </div>
     </div>
   );
+};
 
-  const navItems: { tab: Tab; icon: string; label: string }[] = [
-    { tab: "dashboard", icon: "📊", label: "ড্যাশবোর্ড" },
-    { tab: "questions", icon: "📋", label: "প্রশ্ন" },
-    { tab: "leaderboard", icon: "🏆", label: "লিডারবোর্ড" },
-    { tab: "users", icon: "👥", label: "ইউজার" },
-    { tab: "settings", icon: "⚙️", label: "সেটিংস" },
-  ];
+// ─── JSON Upload Modal ────────────────────────────────────────────────────────
+function JsonUploadModal({ type, subjects, onClose, onSuccess, showToast }: {
+  type: "mcq" | "preparation";
+  subjects: Subject[];
+  onClose: () => void;
+  onSuccess: () => void;
+  showToast: (msg: string, type?: "success" | "error") => void;
+}) {
+  const [jsonText, setJsonText] = useState("");
+  const [selectedSubjectId, setSelectedSubjectId] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [parsed, setParsed] = useState<any[] | null>(null);
+  const [parseError, setParseError] = useState("");
 
-  const ToggleSwitch = ({ checked, onChange }: { checked: boolean; onChange: () => void }) => (
-    <button
-      onClick={onChange}
-      className={`relative w-11 h-6 rounded-full transition-colors flex-shrink-0 ${
-        checked ? "bg-blue-500" : "bg-gray-200 dark:bg-gray-700"
-      }`}
-    >
-      <span className={`absolute top-0.5 w-5 h-5 bg-white rounded-full transition-all ${
-        checked ? "left-[22px]" : "left-0.5"
-      }`} />
-    </button>
-  );
+  const handleParse = () => {
+    setParseError("");
+    try {
+      const data = JSON.parse(jsonText.trim());
+      if (!Array.isArray(data)) { setParseError("JSON অবশ্যই একটি array [ ] হতে হবে!"); return; }
+      if (data.length === 0) { setParseError("Array খালি! কমপক্ষে একটি item দিন।"); return; }
+
+      if (type === "mcq") {
+        const invalid = data.find(item => !item.q || !item.a || !item.b || !item.c || !item.d || !["a","b","c","d"].includes(item.correct));
+        if (invalid) { setParseError('প্রতিটি প্রশ্নে q, a, b, c, d এবং correct (a/b/c/d) থাকতে হবে!'); return; }
+      } else {
+        const invalid = data.find(item => !item.question || !item.answer);
+        if (invalid) { setParseError('প্রতিটি item-এ "question" এবং "answer" থাকতে হবে!'); return; }
+      }
+
+      setParsed(data);
+    } catch (e) {
+      setParseError("JSON format ঠিক নেই! উদাহরণটি দেখে আবার চেষ্টা করুন।");
+    }
+  };
+
+  const handleSave = async () => {
+    if (!parsed) return;
+    if (type === "preparation" && !selectedSubjectId) {
+      setParseError("কোন বিষয়ে যোগ করবেন সেটি নির্বাচন করুন!");
+      return;
+    }
+    setSaving(true);
+    try {
+      if (type === "mcq") {
+        const batch = writeBatch(db);
+        parsed.forEach(item => {
+          const ref = doc(collection(db, "questions"));
+          batch.set(ref, { q: item.q, a: item.a, b: item.b, c: item.c, d: item.d, correct: item.correct });
+        });
+        await batch.commit();
+        showToast(`${parsed.length}টি MCQ প্রশ্ন সফলভাবে যোগ হয়েছে ✅`);
+      } else {
+        const subRef = doc(db, "subjects", selectedSubjectId);
+        const subSnap = await getDoc(subRef);
+        const existing = subSnap.data()?.preparation || [];
+        const updated = [...existing, ...parsed.map(item => ({ question: item.question, answer: item.answer }))];
+        await updateDoc(subRef, { preparation: updated });
+        showToast(`${parsed.length}টি প্রস্তুতি প্রশ্ন সফলভাবে যোগ হয়েছে ✅`);
+      }
+      onSuccess();
+      onClose();
+    } catch (e) {
+      showToast("সেভ করতে সমস্যা হয়েছে!", "error");
+    } finally {
+      setSaving(false);
+    }
+  };
 
   return (
-    <div className="flex min-h-screen bg-gray-100 dark:bg-gray-950 text-gray-900 dark:text-gray-100">
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 p-0 sm:p-4">
+      <div className="w-full sm:max-w-2xl bg-white dark:bg-slate-900 rounded-t-2xl sm:rounded-2xl border border-slate-200 dark:border-slate-800 max-h-[92vh] flex flex-col">
+        {/* Header */}
+        <div className="flex items-center justify-between p-4 border-b border-slate-200 dark:border-slate-800 shrink-0">
+          <div>
+            <h3 className="font-extrabold text-slate-800 dark:text-slate-100">
+              {type === "mcq" ? "📥 MCQ প্রশ্ন JSON Upload" : "📥 প্রস্তুতি প্রশ্ন JSON Upload"}
+            </h3>
+            <p className="text-xs text-slate-400 mt-0.5">
+              {type === "mcq" ? "questions collection-এ যাবে" : "subject-এর preparation-এ যোগ হবে"}
+            </p>
+          </div>
+          <button onClick={onClose} className="text-slate-400 text-xl hover:text-slate-600 dark:hover:text-slate-200">✕</button>
+        </div>
 
-      {/* Toast */}
+        <div className="overflow-y-auto p-4 space-y-4 flex-1">
+          {/* Format Preview */}
+          <JsonFormatPreview type={type} />
+
+          {/* Subject selector for preparation */}
+          {type === "preparation" && (
+            <div>
+              <label className="text-xs font-bold text-slate-600 dark:text-slate-300 mb-1.5 block">
+                কোন বিষয়ে প্রস্তুতি প্রশ্ন যোগ করবেন? *
+              </label>
+              <select
+                value={selectedSubjectId}
+                onChange={e => setSelectedSubjectId(e.target.value)}
+                className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 p-3 text-sm focus:outline-none focus:border-indigo-400"
+              >
+                <option value="">— বিষয় নির্বাচন করুন —</option>
+                {subjects.map(s => (
+                  <option key={s.id} value={s.id}>{s.name} ({s.examId})</option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {/* JSON Input */}
+          <div>
+            <label className="text-xs font-bold text-slate-600 dark:text-slate-300 mb-1.5 block">
+              এখানে JSON paste করুন *
+            </label>
+            <textarea
+              value={jsonText}
+              onChange={e => { setJsonText(e.target.value); setParsed(null); setParseError(""); }}
+              rows={10}
+              placeholder={type === "mcq"
+                ? `[\n  {\n    "q": "প্রশ্ন লিখুন",\n    "a": "অপশন A",\n    "b": "অপশন B",\n    "c": "অপশন C",\n    "d": "অপশন D",\n    "correct": "a"\n  }\n]`
+                : `[\n  {\n    "question": "প্রশ্ন লিখুন",\n    "answer": "উত্তর লিখুন"\n  }\n]`
+              }
+              className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 p-3 text-sm focus:outline-none focus:border-indigo-400 font-mono resize-none"
+            />
+          </div>
+
+          {/* Error */}
+          {parseError && (
+            <div className="flex items-start gap-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl p-3">
+              <span className="text-red-500 shrink-0">❌</span>
+              <p className="text-sm text-red-600 dark:text-red-400 font-bold">{parseError}</p>
+            </div>
+          )}
+
+          {/* Parse Success Preview */}
+          {parsed && (
+            <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-xl p-3">
+              <p className="text-sm font-bold text-green-700 dark:text-green-400">
+                ✅ {parsed.length}টি {type === "mcq" ? "MCQ প্রশ্ন" : "প্রস্তুতি প্রশ্ন"} সঠিকভাবে পড়া হয়েছে — এখন সেভ করুন!
+              </p>
+            </div>
+          )}
+        </div>
+
+        {/* Footer Buttons */}
+        <div className="p-4 border-t border-slate-200 dark:border-slate-800 flex gap-3 shrink-0">
+          <button onClick={onClose} className="flex-1 py-3 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 font-bold text-sm">
+            বাতিল
+          </button>
+          {!parsed ? (
+            <button
+              onClick={handleParse}
+              disabled={!jsonText.trim()}
+              className="flex-1 py-3 rounded-xl bg-amber-500 hover:bg-amber-600 text-white font-bold text-sm disabled:opacity-50 transition"
+            >
+              🔍 যাচাই করুন
+            </button>
+          ) : (
+            <button
+              onClick={handleSave}
+              disabled={saving}
+              className="flex-1 py-3 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-sm disabled:opacity-60 transition"
+            >
+              {saving ? "সেভ হচ্ছে..." : `💾 ${parsed.length}টি প্রশ্ন সেভ করুন`}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Main Component ───────────────────────────────────────────────────────────
+export default function AdminPage() {
+  const router = useRouter();
+  const [authChecked, setAuthChecked] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [activeTab, setActiveTab] = useState<Tab>("overview");
+  const [toast, setToast] = useState<{ msg: string; type: "success" | "error" } | null>(null);
+
+  const [questions, setQuestions] = useState<Question[]>([]);
+  const [subjects, setSubjects] = useState<Subject[]>([]);
+  const [users, setUsers] = useState<UserData[]>([]);
+  const [attempts, setAttempts] = useState<Attempt[]>([]);
+  const [notice, setNotice] = useState("");
+  const [examConfigId, setExamConfigId] = useState("");
+  const [loadingTab, setLoadingTab] = useState(false);
+
+  const [qModal, setQModal] = useState<{ open: boolean; data?: Question }>({ open: false });
+  const [sModal, setSModal] = useState<{ open: boolean; data?: Subject }>({ open: false });
+  const [confirmModal, setConfirmModal] = useState<{ open: boolean; msg: string; onOk: () => void } | null>(null);
+  // ✅ নতুন JSON upload modal state
+  const [jsonModal, setJsonModal] = useState<{ open: boolean; type: "mcq" | "preparation" } | null>(null);
+
+  const showToast = (msg: string, type: "success" | "error" = "success") => {
+    setToast({ msg, type });
+    setTimeout(() => setToast(null), 3500);
+  };
+
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, async (user) => {
+      if (!user) { router.push("/"); return; }
+      const snap = await getDoc(doc(db, "users", user.uid));
+      if (snap.data()?.isAdmin === true) {
+        setIsAdmin(true);
+      } else {
+        router.push("/dashboard");
+      }
+      setAuthChecked(true);
+    });
+    return () => unsub();
+  }, [router]);
+
+  const fetchTab = useCallback(async (tab: Tab) => {
+    setLoadingTab(true);
+    try {
+      if (tab === "overview") {
+        const [qSnap, uSnap, aSnap, noticeSnap, configSnap] = await Promise.all([
+          getDocs(collection(db, "questions")),
+          getDocs(collection(db, "users")),
+          getDocs(collection(db, "user_attempts")),
+          getDoc(doc(db, "settings", "notice")),
+          getDoc(doc(db, "settings", "exam_config")),
+        ]);
+        setQuestions(qSnap.docs.map(d => ({ id: d.id, ...d.data() } as Question)));
+        setUsers(uSnap.docs.map(d => ({ id: d.id, ...d.data() } as UserData)));
+        setAttempts(aSnap.docs.map(d => ({ id: d.id, ...d.data() } as Attempt)));
+        setNotice(noticeSnap.data()?.text || "");
+        setExamConfigId(configSnap.data()?.current_exam_id || "");
+      } else if (tab === "questions") {
+        const snap = await getDocs(collection(db, "questions"));
+        setQuestions(snap.docs.map(d => ({ id: d.id, ...d.data() } as Question)));
+      } else if (tab === "subjects") {
+        const snap = await getDocs(query(collection(db, "subjects"), orderBy("examDate", "asc")));
+        setSubjects(snap.docs.map(d => ({ id: d.id, ...d.data() } as Subject)));
+      } else if (tab === "users") {
+        const snap = await getDocs(collection(db, "users"));
+        setUsers(snap.docs.map(d => ({ id: d.id, ...d.data() } as UserData)));
+      } else if (tab === "results") {
+        const [aSnap, uSnap] = await Promise.all([
+          getDocs(collection(db, "user_attempts")),
+          getDocs(collection(db, "users")),
+        ]);
+        setAttempts(aSnap.docs.map(d => ({ id: d.id, ...d.data() } as Attempt)));
+        setUsers(uSnap.docs.map(d => ({ id: d.id, ...d.data() } as UserData)));
+      } else if (tab === "settings") {
+        const [noticeSnap, configSnap] = await Promise.all([
+          getDoc(doc(db, "settings", "notice")),
+          getDoc(doc(db, "settings", "exam_config")),
+        ]);
+        setNotice(noticeSnap.data()?.text || "");
+        setExamConfigId(configSnap.data()?.current_exam_id || "");
+      }
+    } catch (e) {
+      showToast("ডেটা লোড করতে সমস্যা হয়েছে", "error");
+    } finally {
+      setLoadingTab(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (isAdmin) fetchTab(activeTab);
+  }, [isAdmin, activeTab, fetchTab]);
+
+  const saveQuestion = async (data: Omit<Question, "id">, id?: string) => {
+    if (id) {
+      await updateDoc(doc(db, "questions", id), data as any);
+      showToast("প্রশ্ন আপডেট হয়েছে ✅");
+    } else {
+      await addDoc(collection(db, "questions"), data);
+      showToast("নতুন প্রশ্ন যোগ হয়েছে ✅");
+    }
+    setQModal({ open: false });
+    fetchTab("questions");
+  };
+
+  const deleteQuestion = async (id: string) => {
+    await deleteDoc(doc(db, "questions", id));
+    showToast("প্রশ্ন মুছে গেছে", "error");
+    fetchTab("questions");
+  };
+
+  const saveSubject = async (data: any, id?: string) => {
+    if (id) {
+      await updateDoc(doc(db, "subjects", id), data);
+      showToast("বিষয় আপডেট হয়েছে ✅");
+    } else {
+      await addDoc(collection(db, "subjects"), data);
+      showToast("নতুন বিষয় যোগ হয়েছে ✅");
+    }
+    setSModal({ open: false });
+    fetchTab("subjects");
+  };
+
+  const deleteSubject = async (id: string) => {
+    await deleteDoc(doc(db, "subjects", id));
+    showToast("বিষয় মুছে গেছে", "error");
+    fetchTab("subjects");
+  };
+
+  const toggleAdmin = async (u: UserData) => {
+    await updateDoc(doc(db, "users", u.id), { isAdmin: !u.isAdmin });
+    showToast(!u.isAdmin ? `${u.name} কে Admin বানানো হয়েছে ✅` : `${u.name} এর Admin সরানো হয়েছে`);
+    fetchTab("users");
+  };
+
+  const toggleRetake = async (u: UserData) => {
+    await updateDoc(doc(db, "users", u.id), { retakeAccess: !u.retakeAccess });
+    showToast(!u.retakeAccess ? `${u.name} কে Retake দেওয়া হয়েছে ✅` : `${u.name} এর Retake সরানো হয়েছে`);
+    fetchTab("users");
+  };
+
+  const resetScore = async (u: UserData) => {
+    await updateDoc(doc(db, "users", u.id), { total_score: 0 });
+    showToast(`${u.name} এর স্কোর রিসেট হয়েছে`, "error");
+    fetchTab("users");
+  };
+
+  const deleteAttempt = async (attemptId: string, uid: string, score: number) => {
+    const batch = writeBatch(db);
+    batch.delete(doc(db, "user_attempts", attemptId));
+    batch.update(doc(db, "users", uid), { total_score: Math.max(0, (users.find(u => u.id === uid)?.total_score || 0) - score) });
+    await batch.commit();
+    showToast("Attempt মুছে গেছে এবং স্কোর বাদ দেওয়া হয়েছে", "error");
+    fetchTab("results");
+  };
+
+  const saveNotice = async () => {
+    await setDoc(doc(db, "settings", "notice"), { text: notice });
+    showToast("নোটিশ সেভ হয়েছে ✅");
+  };
+
+  const saveExamConfig = async () => {
+    await setDoc(doc(db, "settings", "exam_config"), { current_exam_id: examConfigId });
+    showToast("Exam Config সেভ হয়েছে ✅");
+  };
+
+  const resetLeaderboard = async () => {
+    const batch = writeBatch(db);
+    users.forEach(u => batch.update(doc(db, "users", u.id), { total_score: 0 }));
+    await batch.commit();
+    showToast("সব স্কোর রিসেট হয়েছে!", "error");
+    fetchTab("settings");
+  };
+
+  if (!authChecked) return (
+    <div className="flex min-h-screen items-center justify-center bg-slate-50 dark:bg-slate-950">
+      <div className="w-8 h-8 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin" />
+    </div>
+  );
+  if (!isAdmin) return null;
+
+  const totalAttemptCount = attempts.length;
+  const avgScore = attempts.length > 0
+    ? Math.round(attempts.reduce((s, a) => s + (a.score || 0), 0) / attempts.length * 10) / 10
+    : 0;
+
+  const tabs: { id: Tab; label: string; icon: string }[] = [
+    { id: "overview", label: "ওভারভিউ", icon: "📊" },
+    { id: "questions", label: "প্রশ্ন", icon: "❓" },
+    { id: "subjects", label: "বিষয়", icon: "📖" },
+    { id: "users", label: "ইউজার", icon: "👥" },
+    { id: "results", label: "ফলাফল", icon: "🏆" },
+    { id: "settings", label: "সেটিং", icon: "⚙️" },
+  ];
+
+  return (
+    <div className="min-h-screen bg-slate-50 dark:bg-slate-950 pb-24">
+
       {toast && (
-        <div className={`fixed top-5 right-5 z-50 px-5 py-3 rounded-xl text-sm font-bold transition-all ${
-          toast.type === "success" ? "bg-green-600 text-white" : "bg-red-600 text-white"
-        }`}>
+        <div className={`fixed top-4 left-1/2 -translate-x-1/2 z-[100] px-5 py-3 rounded-2xl shadow-lg text-sm font-bold text-white transition-all ${toast.type === "success" ? "bg-green-600" : "bg-red-500"}`}>
           {toast.msg}
         </div>
       )}
 
-      {/* Sidebar */}
-      <aside className="w-56 bg-white dark:bg-gray-900 border-r border-gray-200 dark:border-gray-700 flex flex-col py-6 px-3 gap-1 sticky top-0 h-screen">
-        <div className="px-3 pb-4 mb-2 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
-          <div>
-            <p className="text-base font-bold text-gray-800 dark:text-gray-100">⚙️ Admin Panel</p>
-            <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">পরীক্ষা নিয়ন্ত্রণ কেন্দ্র</p>
+      {confirmModal?.open && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="bg-white dark:bg-slate-900 rounded-2xl p-6 w-full max-w-sm shadow-xl">
+            <p className="text-slate-800 dark:text-slate-100 font-bold text-center mb-6">{confirmModal.msg}</p>
+            <div className="flex gap-3">
+              <button onClick={() => setConfirmModal(null)} className="flex-1 py-3 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 font-bold text-sm">বাতিল</button>
+              <button onClick={() => { confirmModal.onOk(); setConfirmModal(null); }} className="flex-1 py-3 rounded-xl bg-red-500 text-white font-bold text-sm">নিশ্চিত করুন</button>
+            </div>
           </div>
-          <button
-            onClick={toggleTheme}
-            aria-label="থিম পরিবর্তন করুন"
-            className="relative w-10 h-6 rounded-full bg-gray-100 dark:bg-gray-800 transition-colors duration-200 flex items-center px-0.5 border border-gray-200 dark:border-gray-700 flex-shrink-0"
-          >
-            <span
-              className={`w-4.5 h-4.5 w-[18px] h-[18px] rounded-full bg-white dark:bg-gray-950 flex items-center justify-center text-[9px] transition-transform duration-200 ${
-                theme === "dark" ? "translate-x-4" : "translate-x-0"
-              }`}
-            >
-              {theme === "dark" ? "🌙" : "☀️"}
-            </span>
+        </div>
+      )}
+
+      <div className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-4 py-3 sticky top-0 z-20">
+        <div className="max-w-5xl mx-auto flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="text-lg">🛡️</span>
+            <h1 className="text-base font-extrabold text-slate-800 dark:text-slate-100">Admin Panel</h1>
+          </div>
+          <button onClick={() => router.push("/dashboard")} className="text-xs font-bold text-slate-500 dark:text-slate-400 px-3 py-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition">
+            ← ড্যাশবোর্ড
           </button>
         </div>
-        {navItems.map(({ tab, icon, label }) => (
-          <button
-            key={tab}
-            onClick={() => setActiveTab(tab)}
-            className={`flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-sm font-medium transition text-left ${
-              activeTab === tab
-                ? "bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300"
-                : "text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800"
-            }`}
-          >
-            <span>{icon}</span> {label}
-          </button>
-        ))}
-      </aside>
+      </div>
 
-      {/* Main */}
-      <main className="flex-1 p-8 overflow-auto">
+      <div className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 sticky top-[53px] z-10 overflow-x-auto">
+        <div className="max-w-5xl mx-auto flex">
+          {tabs.map(t => (
+            <button key={t.id} onClick={() => setActiveTab(t.id)}
+              className={`flex items-center gap-1.5 px-4 py-3 text-xs font-bold whitespace-nowrap border-b-2 transition-colors ${
+                activeTab === t.id ? "border-indigo-600 text-indigo-600 dark:text-indigo-400" : "border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+              }`}>
+              <span>{t.icon}</span>
+              <span className="hidden sm:inline">{t.label}</span>
+            </button>
+          ))}
+        </div>
+      </div>
 
-        {/* ── DASHBOARD TAB ── */}
-        {activeTab === "dashboard" && (
-          <div>
-            <h1 className="text-xl font-bold text-gray-800 dark:text-gray-100 mb-6">ড্যাশবোর্ড</h1>
+      <div className="max-w-5xl mx-auto px-3 sm:px-4 mt-5">
+        {loadingTab ? <Spinner /> : <>
 
-            {/* Stat Cards */}
-            <div className="grid grid-cols-4 gap-4 mb-8">
-              {[
-                { label: "মোট প্রশ্ন", value: `${questions.length}টি`, color: "text-blue-600 dark:text-blue-400" },
-                { label: "মোট পরীক্ষার্থী", value: totalAttempts, color: "text-gray-700 dark:text-gray-200" },
-                { label: "গড় স্কোর", value: `${avgScore}%`, color: "text-gray-700 dark:text-gray-200" },
-                { label: "পরীক্ষার অবস্থা", value: examConfig.exam_active ? "চালু ✅" : "বন্ধ ❌", color: examConfig.exam_active ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400" },
-              ].map((s, i) => (
-                <div key={i} className="bg-white dark:bg-gray-900 rounded-2xl p-5 border border-gray-200 dark:border-gray-700">
-                  <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">{s.label}</p>
-                  <p className={`text-2xl font-bold ${s.color}`}>{s.value}</p>
+          {/* OVERVIEW */}
+          {activeTab === "overview" && (
+            <div className="space-y-5">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                {[
+                  { label: "মোট প্রশ্ন", value: questions.length, color: "bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400", icon: "❓" },
+                  { label: "মোট ইউজার", value: users.length, color: "bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600 dark:text-indigo-400", icon: "👥" },
+                  { label: "মোট Attempt", value: totalAttemptCount, color: "bg-green-50 dark:bg-green-900/20 text-green-600 dark:text-green-400", icon: "📝" },
+                  { label: "গড় স্কোর", value: avgScore, color: "bg-amber-50 dark:bg-amber-900/20 text-amber-600 dark:text-amber-400", icon: "📊" },
+                ].map(stat => (
+                  <div key={stat.label} className={`rounded-2xl p-4 ${stat.color} border border-current/10`}>
+                    <p className="text-2xl font-extrabold">{stat.value}</p>
+                    <p className="text-xs font-bold mt-1 opacity-80">{stat.icon} {stat.label}</p>
+                  </div>
+                ))}
+              </div>
+              <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4">
+                <h3 className="font-extrabold text-slate-800 dark:text-slate-100 mb-3 text-sm">🏆 শীর্ষ ইউজার</h3>
+                <div className="space-y-2">
+                  {[...users].sort((a, b) => (b.total_score || 0) - (a.total_score || 0)).slice(0, 5).map((u, i) => (
+                    <div key={u.id} className="flex items-center gap-3 p-2 rounded-xl bg-slate-50 dark:bg-slate-800/50">
+                      <span className="w-6 text-center text-sm font-bold text-slate-400">#{i + 1}</span>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-bold text-slate-800 dark:text-slate-100 truncate">{u.name || "অজানা"}</p>
+                        <p className="text-xs text-slate-400 truncate">{u.email}</p>
+                      </div>
+                      <span className="text-sm font-extrabold text-indigo-600 dark:text-indigo-400">{u.total_score || 0} pts</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4">
+                <h3 className="font-extrabold text-slate-800 dark:text-slate-100 mb-3 text-sm">🕐 সাম্প্রতিক Attempt</h3>
+                <div className="space-y-2">
+                  {[...attempts].sort((a, b) => (b.timestamp?.toDate?.()?.getTime() || 0) - (a.timestamp?.toDate?.()?.getTime() || 0)).slice(0, 5).map(a => (
+                    <div key={a.id} className="flex items-center gap-3 p-2 rounded-xl bg-slate-50 dark:bg-slate-800/50">
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-bold text-slate-800 dark:text-slate-100 truncate">{a.displayName || a.email}</p>
+                        <p className="text-xs text-slate-400">{a.examId}</p>
+                      </div>
+                      <span className={`text-xs font-bold px-2 py-1 rounded-lg ${(a.score / a.total) >= 0.7 ? "bg-green-50 dark:bg-green-900/20 text-green-600" : "bg-red-50 dark:bg-red-900/20 text-red-500"}`}>{a.score}/{a.total}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* QUESTIONS TAB */}
+          {activeTab === "questions" && (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <p className="text-sm font-bold text-slate-500 dark:text-slate-400">মোট {questions.length}টি প্রশ্ন</p>
+                <div className="flex gap-2">
+                  {/* ✅ JSON Upload বাটন */}
+                  <button
+                    onClick={() => setJsonModal({ open: true, type: "mcq" })}
+                    className="bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold px-3 py-2 rounded-xl transition active:scale-95 flex items-center gap-1.5"
+                  >
+                    📥 JSON Upload
+                  </button>
+                  <button onClick={() => setQModal({ open: true })} className="bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-bold px-4 py-2 rounded-xl transition active:scale-95">
+                    + নতুন প্রশ্ন
+                  </button>
+                </div>
+              </div>
+              <div className="space-y-3">
+                {questions.map((q, idx) => (
+                  <div key={q.id} className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4">
+                    <div className="flex items-start gap-3">
+                      <span className="text-xs font-extrabold text-slate-400 dark:text-slate-500 mt-1 shrink-0">Q{idx + 1}</span>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-bold text-slate-800 dark:text-slate-100 mb-2">{q.q}</p>
+                        <div className="grid grid-cols-2 gap-1.5">
+                          {(["a", "b", "c", "d"] as const).map(k => (
+                            <div key={k} className={`text-xs p-2 rounded-lg border ${k === q.correct ? "border-green-400 bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-400 font-bold" : "border-slate-100 dark:border-slate-800 text-slate-500 dark:text-slate-400"}`}>
+                              <span className="uppercase font-bold">{k}.</span> {q[k]}{k === q.correct && " ✓"}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="flex flex-col gap-1.5 shrink-0">
+                        <button onClick={() => setQModal({ open: true, data: q })} className="text-xs bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 px-3 py-1.5 rounded-lg font-bold hover:bg-indigo-50 dark:hover:bg-indigo-900/30 hover:text-indigo-600 transition">✏️ সম্পাদনা</button>
+                        <button onClick={() => setConfirmModal({ open: true, msg: "এই প্রশ্নটি মুছে ফেলবেন?", onOk: () => deleteQuestion(q.id) })} className="text-xs bg-slate-100 dark:bg-slate-800 text-red-500 px-3 py-1.5 rounded-lg font-bold hover:bg-red-50 dark:hover:bg-red-900/20 transition">🗑️ মুছুন</button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* SUBJECTS TAB */}
+          {activeTab === "subjects" && (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <p className="text-sm font-bold text-slate-500 dark:text-slate-400">মোট {subjects.length}টি বিষয়</p>
+                <div className="flex gap-2">
+                  {/* ✅ Preparation JSON Upload বাটন */}
+                  <button
+                    onClick={() => { fetchTab("subjects"); setJsonModal({ open: true, type: "preparation" }); }}
+                    className="bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold px-3 py-2 rounded-xl transition active:scale-95 flex items-center gap-1.5"
+                  >
+                    📥 প্রস্তুতি JSON
+                  </button>
+                  <button onClick={() => setSModal({ open: true })} className="bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-bold px-4 py-2 rounded-xl transition active:scale-95">
+                    + নতুন বিষয়
+                  </button>
+                </div>
+              </div>
+              <div className="space-y-3">
+                {subjects.map(s => {
+                  const examDate = s.examDate?.toDate ? s.examDate.toDate() : new Date(s.examDate);
+                  const isPast = examDate < new Date();
+                  return (
+                    <div key={s.id} className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap mb-1">
+                            <h4 className="font-extrabold text-slate-800 dark:text-slate-100 text-sm">{s.name}</h4>
+                            <Badge color={isPast ? "bg-slate-100 dark:bg-slate-800 text-slate-500" : "bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400"}>
+                              {isPast ? "শেষ" : "আসছে"}
+                            </Badge>
+                          </div>
+                          <p className="text-xs text-slate-400">ID: {s.examId}</p>
+                          <p className="text-xs text-slate-400">📅 {examDate.toLocaleString("bn-BD")}</p>
+                          <p className="text-xs text-slate-400">⏱️ {s.durationMinutes} মিনিট | 📚 {s.preparation?.length || 0}টি প্রস্তুতি প্রশ্ন</p>
+                        </div>
+                        <div className="flex flex-col gap-1.5 shrink-0">
+                          <button onClick={() => setSModal({ open: true, data: s })} className="text-xs bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 px-3 py-1.5 rounded-lg font-bold hover:bg-indigo-50 dark:hover:bg-indigo-900/30 hover:text-indigo-600 transition">✏️ সম্পাদনা</button>
+                          <button onClick={() => setConfirmModal({ open: true, msg: `"${s.name}" বিষয়টি মুছে ফেলবেন?`, onOk: () => deleteSubject(s.id) })} className="text-xs bg-slate-100 dark:bg-slate-800 text-red-500 px-3 py-1.5 rounded-lg font-bold hover:bg-red-50 dark:hover:bg-red-900/20 transition">🗑️ মুছুন</button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* USERS TAB */}
+          {activeTab === "users" && (
+            <div className="space-y-3">
+              <p className="text-sm font-bold text-slate-500 dark:text-slate-400">মোট {users.length} জন ইউজার</p>
+              {[...users].sort((a, b) => (b.total_score || 0) - (a.total_score || 0)).map(u => (
+                <div key={u.id} className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4">
+                  <div className="flex items-start gap-3">
+                    {u.photoURL ? (
+                      <img src={u.photoURL} alt="" className="w-10 h-10 rounded-full object-cover shrink-0" />
+                    ) : (
+                      <div className="w-10 h-10 rounded-full bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center text-sm font-bold text-white shrink-0">
+                        {u.name?.charAt(0)?.toUpperCase() || "?"}
+                      </div>
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1.5 flex-wrap mb-0.5">
+                        <p className="text-sm font-extrabold text-slate-800 dark:text-slate-100">{u.name || "অজানা"}</p>
+                        {u.isAdmin && <Badge color="bg-indigo-100 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-400">Admin</Badge>}
+                        {u.retakeAccess && <Badge color="bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400">Retake</Badge>}
+                      </div>
+                      <p className="text-xs text-slate-400 truncate">{u.email}</p>
+                      <p className="text-xs font-bold text-indigo-600 dark:text-indigo-400 mt-1">{u.total_score || 0} পয়েন্ট</p>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-2 mt-3 pt-3 border-t border-slate-100 dark:border-slate-800">
+                    <button onClick={() => setConfirmModal({ open: true, msg: u.isAdmin ? `${u.name} এর Admin সরাবেন?` : `${u.name} কে Admin বানাবেন?`, onOk: () => toggleAdmin(u) })} className={`text-xs px-3 py-1.5 rounded-lg font-bold transition ${u.isAdmin ? "bg-indigo-100 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-400" : "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300"}`}>
+                      {u.isAdmin ? "🛡️ Admin সরান" : "🛡️ Admin করুন"}
+                    </button>
+                    <button onClick={() => setConfirmModal({ open: true, msg: u.retakeAccess ? `${u.name} এর Retake সরাবেন?` : `${u.name} কে Retake দেবেন?`, onOk: () => toggleRetake(u) })} className={`text-xs px-3 py-1.5 rounded-lg font-bold transition ${u.retakeAccess ? "bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400" : "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300"}`}>
+                      {u.retakeAccess ? "🔄 Retake সরান" : "🔄 Retake দিন"}
+                    </button>
+                    <button onClick={() => setConfirmModal({ open: true, msg: `${u.name} এর স্কোর ০ করবেন?`, onOk: () => resetScore(u) })} className="text-xs bg-slate-100 dark:bg-slate-800 text-red-500 px-3 py-1.5 rounded-lg font-bold hover:bg-red-50 dark:hover:bg-red-900/20 transition">
+                      🔁 স্কোর রিসেট
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
+          )}
 
-            {/* Quick Controls */}
-            <div className="grid grid-cols-2 gap-6">
-              <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-700 p-6">
-                <h3 className="font-bold text-gray-800 dark:text-gray-100 mb-4">⚡ দ্রুত নিয়ন্ত্রণ</h3>
-                <div className="space-y-4">
-                  {[
-                    { label: "পরীক্ষা চালু/বন্ধ", sub: "ইউজাররা পরীক্ষা দিতে পারবে কিনা", key: "exam_active" as const },
-                    { label: "লিডারবোর্ড দেখাবে", sub: "Dashboard-এ র‍্যাংকিং দেখাবে", key: "show_leaderboard" as const },
-                    { label: "একাধিক Attempt", sub: "একজন বারবার পরীক্ষা দিতে পারবে", key: "multiple_attempts" as const },
-                  ].map(({ label, sub, key }) => (
-                    <div key={key} className="flex items-center justify-between">
-                      <div>
-                        <p className="text-sm font-medium text-gray-700 dark:text-gray-200">{label}</p>
-                        <p className="text-xs text-gray-500 dark:text-gray-400">{sub}</p>
-                      </div>
-                      <ToggleSwitch checked={examConfig[key]} onChange={() => setExamConfig(p => ({ ...p, [key]: !p[key] }))} />
-                    </div>
-                  ))}
+          {/* RESULTS TAB */}
+          {activeTab === "results" && (
+            <div className="space-y-4">
+              <div className="grid grid-cols-3 gap-2">
+                <div className="bg-blue-50 dark:bg-blue-900/20 rounded-2xl p-3 text-center">
+                  <p className="text-xl font-extrabold text-blue-600 dark:text-blue-400">{attempts.length}</p>
+                  <p className="text-[11px] font-bold text-blue-500 mt-0.5">মোট Attempt</p>
                 </div>
-                <div className="mt-5 flex gap-2">
-                  <button
-                    onClick={handleSaveConfig}
-                    disabled={isSavingConfig}
-                    className="flex-1 py-2.5 bg-blue-500 hover:bg-blue-600 disabled:bg-gray-300 dark:disabled:bg-gray-700 text-white rounded-xl text-sm font-bold transition"
-                  >
-                    {isSavingConfig ? "সেভ হচ্ছে..." : "💾 সেটিংস সেভ করুন"}
-                  </button>
+                <div className="bg-green-50 dark:bg-green-900/20 rounded-2xl p-3 text-center">
+                  <p className="text-xl font-extrabold text-green-600 dark:text-green-400">{attempts.filter(a => a.total > 0 && (a.score / a.total) >= 0.7).length}</p>
+                  <p className="text-[11px] font-bold text-green-500 mt-0.5">পাস (≥70%)</p>
+                </div>
+                <div className="bg-red-50 dark:bg-red-900/20 rounded-2xl p-3 text-center">
+                  <p className="text-xl font-extrabold text-red-500">{avgScore}</p>
+                  <p className="text-[11px] font-bold text-red-400 mt-0.5">গড় স্কোর</p>
                 </div>
               </div>
-
-              <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-700 p-6">
-                <h3 className="font-bold text-gray-800 dark:text-gray-100 mb-4">🏆 শীর্ষ পরীক্ষার্থী</h3>
-                {attempts.length === 0 ? (
-                  <p className="text-sm text-gray-500 dark:text-gray-400 text-center py-6">এখনো কোনো পরীক্ষার্থী নেই।</p>
-                ) : (
-                  <div className="space-y-3">
-                    {attempts.slice(0, 5).map((a, i) => (
-                      <div key={i} className="flex items-center gap-3">
-                        <span className="text-base w-5 text-center">{["🥇","🥈","🥉","4️⃣","5️⃣"][i]}</span>
-                        <div className="flex-1">
-                          <p className="text-sm font-medium text-gray-700 dark:text-gray-200">{a.email || a.uid.slice(0, 12) + "..."}</p>
+              <div className="space-y-3">
+                {[...attempts].sort((a, b) => (b.timestamp?.toDate?.()?.getTime() || 0) - (a.timestamp?.toDate?.()?.getTime() || 0)).map(a => {
+                  const pct = a.total > 0 ? Math.round((a.score / a.total) * 100) : 0;
+                  const passed = pct >= 70;
+                  return (
+                    <div key={a.id} className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-extrabold text-slate-800 dark:text-slate-100 truncate">{a.displayName || a.email}</p>
+                          <p className="text-xs text-slate-400 truncate">{a.email}</p>
+                          <p className="text-xs text-slate-400">📋 {a.examId}</p>
+                          <p className="text-xs text-slate-400">🕐 {a.timestamp?.toDate?.()?.toLocaleString("bn-BD") || "—"}</p>
                         </div>
-                        <span className="text-sm font-bold text-blue-600 dark:text-blue-400">{a.score}/{questions.length}</span>
+                        <div className="text-right shrink-0">
+                          <p className={`text-lg font-extrabold ${passed ? "text-green-600 dark:text-green-400" : "text-red-500"}`}>{a.score}/{a.total}</p>
+                          <Badge color={passed ? "bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400" : "bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400"}>{pct}%</Badge>
+                        </div>
                       </div>
-                    ))}
-                  </div>
-                )}
-                <button
-                  onClick={() => setActiveTab("leaderboard")}
-                  className="mt-4 w-full py-2 text-sm text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-900 rounded-xl hover:bg-blue-50 dark:hover:bg-blue-950/40 transition font-medium"
-                >
-                  পূর্ণ লিডারবোর্ড →
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* ── QUESTIONS TAB ── */}
-        {activeTab === "questions" && (
-          <div>
-            <h1 className="text-xl font-bold text-gray-800 dark:text-gray-100 mb-6">📋 প্রশ্ন ব্যবস্থাপনা</h1>
-
-            <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-700 p-6 mb-6">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="font-bold text-gray-800 dark:text-gray-100">📥 JSON দিয়ে প্রশ্ন আপলোড করুন</h3>
-                <span className="text-xs bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-300 font-bold px-3 py-1 rounded-full">বর্তমানে {questions.length}টি প্রশ্ন</span>
-              </div>
-              <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
-                ফরম্যাট:{" "}
-                <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded text-gray-600 dark:text-gray-300">
-                  {`[{"q":"প্রশ্ন?","a":"...","b":"...","c":"...","d":"...","correct":"a"}]`}
-                </code>
-              </p>
-              <textarea
-                rows={10}
-                className="w-full border border-gray-200 dark:border-gray-700 p-3 rounded-xl mb-4 font-mono text-sm focus:outline-none focus:border-blue-400 resize-none bg-gray-100 dark:bg-gray-800 text-gray-800 dark:text-gray-100"
-                value={newJson}
-                onChange={e => setNewJson(e.target.value)}
-                placeholder={`[\n  {\n    "q": "বাংলাদেশের রাজধানী কোনটি?",\n    "a": "চট্টগ্রাম",\n    "b": "ঢাকা",\n    "c": "রাজশাহী",\n    "d": "খুলনা",\n    "correct": "b"\n  }\n]`}
-              />
-              <div className="flex gap-3">
-                <button
-                  onClick={handleReplaceQuestions}
-                  disabled={isUpdating || !newJson.trim()}
-                  className={`py-3 px-6 rounded-xl font-bold text-white transition text-sm ${
-                    isUpdating || !newJson.trim() ? "bg-gray-300 dark:bg-gray-700 cursor-not-allowed" : "bg-red-600 hover:bg-red-700"
-                  }`}
-                >
-                  {isUpdating ? "⏳ আপডেট হচ্ছে..." : "🔄 পুরনো মুছে নতুন যোগ করুন"}
-                </button>
-                {newJson.trim() && (
-                  <button onClick={() => setNewJson("")} className="py-3 px-4 rounded-xl text-sm font-bold text-gray-500 dark:text-gray-400 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 transition">
-                    ✕ মুছুন
-                  </button>
-                )}
-              </div>
-            </div>
-
-            {/* Questions list */}
-            {questions.length > 0 && (
-              <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-700 p-6">
-                <h3 className="font-bold text-gray-800 dark:text-gray-100 mb-4">বর্তমান প্রশ্নসমূহ</h3>
-                <div className="space-y-3 max-h-[500px] overflow-y-auto pr-1">
-                  {questions.map((q, i) => (
-                    <div key={q.id} className="p-4 bg-gray-100 dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 text-sm">
-                      <div className="flex items-start justify-between gap-2 mb-2">
-                        <p className="font-bold text-gray-700 dark:text-gray-200">{i + 1}. {q.q || "⚠️ প্রশ্ন নেই"}</p>
-                        <button
-                          onClick={() => handleDeleteQuestion(q.id)}
-                          className="text-xs font-bold text-red-500 hover:text-red-600 px-2 py-1 rounded-lg hover:bg-red-50 dark:hover:bg-red-950/40 transition flex-shrink-0"
-                        >
-                          🗑 মুছুন
-                        </button>
+                      <div className="mt-3 w-full bg-slate-100 dark:bg-slate-800 rounded-full h-1.5">
+                        <div className={`h-1.5 rounded-full ${passed ? "bg-green-500" : "bg-red-400"}`} style={{ width: `${pct}%` }} />
                       </div>
-                      <div className="grid grid-cols-2 gap-1 text-xs text-gray-500 dark:text-gray-400">
-                        {["a","b","c","d"].map(k => (
-                          <span key={k} className={k === q.correct ? "text-green-600 dark:text-green-400 font-bold" : ""}>
-                            {k === q.correct ? "✓" : "·"} {k.toUpperCase()}. {(q as any)[k]}
-                          </span>
-                        ))}
-                      </div>
+                      <button onClick={() => setConfirmModal({ open: true, msg: `${a.displayName || a.email} এর এই attempt মুছবেন?`, onOk: () => deleteAttempt(a.id, a.uid, a.score) })} className="mt-3 text-xs text-red-500 font-bold px-3 py-1.5 rounded-lg bg-red-50 dark:bg-red-900/20 hover:bg-red-100 transition">
+                        🗑️ এই Attempt মুছুন
+                      </button>
                     </div>
-                  ))}
-                </div>
+                  );
+                })}
               </div>
-            )}
-          </div>
-        )}
-
-        {/* ── LEADERBOARD TAB ── */}
-        {activeTab === "leaderboard" && (
-          <div>
-            <div className="flex items-center justify-between mb-6">
-              <h1 className="text-xl font-bold text-gray-800 dark:text-gray-100">🏆 লিডারবোর্ড</h1>
-              <button
-                onClick={handleResetAttempts}
-                className="py-2 px-4 text-sm font-bold text-red-600 dark:text-red-400 border border-red-200 dark:border-red-900 rounded-xl hover:bg-red-50 dark:hover:bg-red-950/40 transition"
-              >
-                🗑 সব Attempt রিসেট
-              </button>
             </div>
+          )}
 
-            {attempts.length === 0 ? (
-              <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-700 p-12 text-center">
-                <p className="text-4xl mb-3">📭</p>
-                <p className="text-gray-500 dark:text-gray-400">এখনো কোনো পরীক্ষার্থী নেই।</p>
-              </div>
-            ) : (
-              <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-700 overflow-hidden">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="bg-gray-100 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
-                      <th className="text-left py-3 px-4 font-bold text-gray-600 dark:text-gray-300">র‍্যাংক</th>
-                      <th className="text-left py-3 px-4 font-bold text-gray-600 dark:text-gray-300">ইউজার</th>
-                      <th className="text-right py-3 px-4 font-bold text-gray-600 dark:text-gray-300">স্কোর</th>
-                      <th className="text-right py-3 px-4 font-bold text-gray-600 dark:text-gray-300">শতাংশ</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {attempts.map((a, i) => {
-                      const pct = questions.length ? Math.round((a.score / questions.length) * 100) : 0;
-                      return (
-                        <tr key={i} className={`border-b border-gray-100 dark:border-gray-800 ${i < 3 ? "bg-amber-50/40 dark:bg-amber-950/20" : ""}`}>
-                          <td className="py-3 px-4 font-bold text-gray-500 dark:text-gray-400">
-                            {i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : `#${i + 1}`}
-                          </td>
-                          <td className="py-3 px-4 text-gray-700 dark:text-gray-200">{a.email || a.uid.slice(0, 16) + "..."}</td>
-                          <td className="py-3 px-4 text-right font-bold text-blue-600 dark:text-blue-400">{a.score}/{questions.length}</td>
-                          <td className="py-3 px-4 text-right">
-                            <span className={`px-2 py-0.5 rounded-full text-xs font-bold ${
-                              pct >= 70 ? "bg-green-50 dark:bg-green-950/40 text-green-700 dark:text-green-300" :
-                              pct >= 40 ? "bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300" :
-                              "bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-300"
-                            }`}>{pct}%</span>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* ── USERS TAB ── */}
-        {activeTab === "users" && (
-          <div>
-            <div className="flex items-center justify-between mb-6 gap-4">
-              <h1 className="text-xl font-bold text-gray-800 dark:text-gray-100">👥 ইউজার ব্যবস্থাপনা</h1>
-              <input
-                type="text"
-                value={userSearch}
-                onChange={e => setUserSearch(e.target.value)}
-                placeholder="নাম বা ইমেইল দিয়ে খুঁজুন..."
-                className="w-64 border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100 rounded-xl px-4 py-2 text-sm focus:outline-none focus:border-blue-400"
-              />
-            </div>
-
-            {filteredUsers.length === 0 ? (
-              <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-700 p-12 text-center">
-                <p className="text-4xl mb-3">👤</p>
-                <p className="text-gray-500 dark:text-gray-400">কোনো ইউজার পাওয়া যায়নি।</p>
-              </div>
-            ) : (
-              <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-700 overflow-hidden">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="bg-gray-100 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
-                      <th className="text-left py-3 px-4 font-bold text-gray-600 dark:text-gray-300">ইউজার</th>
-                      <th className="text-left py-3 px-4 font-bold text-gray-600 dark:text-gray-300">ইমেইল</th>
-                      <th className="text-right py-3 px-4 font-bold text-gray-600 dark:text-gray-300">মোট স্কোর</th>
-                      <th className="text-right py-3 px-4 font-bold text-gray-600 dark:text-gray-300">কার্যক্রম</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredUsers.map((u) => (
-                      <tr key={u.id} className="border-b border-gray-100 dark:border-gray-800">
-                        <td className="py-3 px-4">
-                          <div className="flex items-center gap-2.5">
-                            {u.photoURL ? (
-                              <img src={u.photoURL} alt="" className="w-8 h-8 rounded-full object-cover" />
-                            ) : (
-                              <div className="w-8 h-8 rounded-full bg-blue-500 flex items-center justify-center text-xs font-bold text-white">
-                                {u.name?.charAt(0).toUpperCase() || "?"}
-                              </div>
-                            )}
-                            <span className="font-medium text-gray-700 dark:text-gray-200">{u.name || "অজানা"}</span>
-                          </div>
-                        </td>
-                        <td className="py-3 px-4 text-gray-500 dark:text-gray-400">{u.email || "—"}</td>
-                        <td className="py-3 px-4 text-right font-bold text-blue-600 dark:text-blue-400">{u.total_score || 0}</td>
-                        <td className="py-3 px-4 text-right">
-                          <div className="flex justify-end gap-2">
-                            <button
-                              onClick={() => handleResetUserScore(u.id)}
-                              className="text-xs font-bold text-amber-600 dark:text-amber-400 px-2 py-1 rounded-lg hover:bg-amber-50 dark:hover:bg-amber-950/40 transition"
-                            >
-                              স্কোর রিসেট
-                            </button>
-                            <button
-                              onClick={() => handleDeleteUser(u.id)}
-                              className="text-xs font-bold text-red-500 px-2 py-1 rounded-lg hover:bg-red-50 dark:hover:bg-red-950/40 transition"
-                            >
-                              🗑 মুছুন
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* ── SETTINGS TAB ── */}
-        {activeTab === "settings" && (
-          <div>
-            <h1 className="text-xl font-bold text-gray-800 dark:text-gray-100 mb-6">⚙️ পরীক্ষার সেটিংস</h1>
-
-            <div className="max-w-xl space-y-4">
-
-              {/* Notice */}
-              <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-700 p-6">
-                <h3 className="font-bold text-gray-800 dark:text-gray-100 mb-4">📢 নোটিশ বোর্ড</h3>
-                <label className="block text-sm text-gray-600 dark:text-gray-300 mb-1 font-medium">Dashboard-এ যে নোটিশ দেখাবে</label>
-                <textarea
-                  rows={3}
-                  value={noticeText}
-                  onChange={e => setNoticeText(e.target.value)}
-                  placeholder="যেমন: আগামী পরীক্ষা ২৮ জুন সকাল ১০টায় অনুষ্ঠিত হবে।"
-                  className="w-full border border-gray-200 dark:border-gray-700 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-blue-400 bg-gray-100 dark:bg-gray-800 text-gray-800 dark:text-gray-100 resize-none"
-                />
-                <div className="flex gap-2 mt-3">
-                  <button
-                    onClick={handleSaveNotice}
-                    disabled={isSavingNotice}
-                    className="py-2 px-4 bg-blue-500 hover:bg-blue-600 disabled:bg-gray-300 dark:disabled:bg-gray-700 text-white rounded-xl text-sm font-bold transition"
-                  >
-                    {isSavingNotice ? "সেভ হচ্ছে..." : "💾 নোটিশ সেভ করুন"}
-                  </button>
-                  {noticeText && (
-                    <button
-                      onClick={() => setNoticeText("")}
-                      className="py-2 px-4 rounded-xl text-sm font-bold text-gray-500 dark:text-gray-400 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 transition"
-                    >
-                      ✕ পরিষ্কার করুন
-                    </button>
-                  )}
+          {/* SETTINGS TAB */}
+          {activeTab === "settings" && (
+            <div className="space-y-4">
+              <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4">
+                <h3 className="text-sm font-extrabold text-slate-800 dark:text-slate-100 mb-3">📢 নোটিশ বোর্ড</h3>
+                <textarea value={notice} onChange={e => setNotice(e.target.value)} rows={3} placeholder="ড্যাশবোর্ডে দেখানোর জন্য নোটিশ লিখুন..." className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 p-3 text-sm focus:outline-none focus:border-indigo-400 resize-none" />
+                <div className="flex gap-2 mt-2">
+                  <button onClick={saveNotice} className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-bold py-2.5 rounded-xl transition">সেভ করুন</button>
+                  <button onClick={async () => { setNotice(""); await setDoc(doc(db, "settings", "notice"), { text: "" }); showToast("নোটিশ মুছে গেছে ✅"); }} className="text-sm font-bold text-red-500 px-4 py-2.5 rounded-xl bg-red-50 dark:bg-red-900/20 hover:bg-red-100 transition">মুছুন</button>
                 </div>
               </div>
-
-              {/* Exam ID */}
-              <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-700 p-6">
-                <h3 className="font-bold text-gray-800 dark:text-gray-100 mb-4">🆔 Exam পরিচয়</h3>
-                <label className="block text-sm text-gray-600 dark:text-gray-300 mb-1 font-medium">বর্তমান Exam ID</label>
-                <input
-                  type="text"
-                  value={examConfig.current_exam_id}
-                  onChange={e => setExamConfig(p => ({ ...p, current_exam_id: e.target.value }))}
-                  className="w-full border border-gray-200 dark:border-gray-700 rounded-xl px-4 py-2.5 text-sm font-mono focus:outline-none focus:border-blue-400 bg-gray-100 dark:bg-gray-800 text-gray-800 dark:text-gray-100"
-                />
-                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1.5">এটি পরিবর্তন করলে সব ইউজার নতুন করে পরীক্ষা দিতে পারবে।</p>
+              <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4">
+                <h3 className="text-sm font-extrabold text-slate-800 dark:text-slate-100 mb-1">🎯 Current Exam ID</h3>
+                <p className="text-xs text-slate-400 mb-3">Quiz page যে exam এর attempt চেক করবে</p>
+                <input value={examConfigId} onChange={e => setExamConfigId(e.target.value)} placeholder="যেমন: math_2025" className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 p-3 text-sm focus:outline-none focus:border-indigo-400 mb-2" />
+                <button onClick={saveExamConfig} className="w-full bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-bold py-2.5 rounded-xl transition">সেভ করুন</button>
               </div>
-
-              {/* Timer */}
-              <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-700 p-6">
-                <h3 className="font-bold text-gray-800 dark:text-gray-100 mb-4">⏱ টাইমার সেটিংস</h3>
-                <label className="block text-sm text-gray-600 dark:text-gray-300 mb-1 font-medium">প্রতি প্রশ্নে সময় (সেকেন্ড)</label>
-                <div className="flex items-center gap-3">
-                  <input
-                    type="range"
-                    min={10}
-                    max={120}
-                    step={5}
-                    value={examConfig.timer_seconds}
-                    onChange={e => setExamConfig(p => ({ ...p, timer_seconds: Number(e.target.value) }))}
-                    className="flex-1 accent-blue-500"
-                  />
-                  <span className="w-16 text-center py-2 bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 font-bold text-sm rounded-xl">
-                    {examConfig.timer_seconds}s
-                  </span>
-                </div>
-              </div>
-
-              {/* Toggles */}
-              <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-700 p-6">
-                <h3 className="font-bold text-gray-800 dark:text-gray-100 mb-4">🔧 বিবিধ সেটিংস</h3>
-                <div className="space-y-5">
-                  {[
-                    { label: "পরীক্ষা চালু আছে", sub: "বন্ধ করলে ইউজাররা পরীক্ষা দিতে পারবে না", key: "exam_active" as const },
-                    { label: "একাধিক Attempt অনুমতি", sub: "একজন ইউজার বারবার পরীক্ষা দিতে পারবে", key: "multiple_attempts" as const },
-                    { label: "লিডারবোর্ড দেখাবে", sub: "Dashboard-এ র‍্যাংকিং প্রদর্শিত হবে", key: "show_leaderboard" as const },
-                  ].map(({ label, sub, key }) => (
-                    <div key={key} className="flex items-center justify-between">
-                      <div>
-                        <p className="text-sm font-medium text-gray-700 dark:text-gray-200">{label}</p>
-                        <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{sub}</p>
-                      </div>
-                      <ToggleSwitch checked={examConfig[key]} onChange={() => setExamConfig(p => ({ ...p, [key]: !p[key] }))} />
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* Save button */}
-              <button
-                onClick={handleSaveConfig}
-                disabled={isSavingConfig}
-                className="w-full py-3.5 bg-blue-500 hover:bg-blue-600 disabled:bg-gray-300 dark:disabled:bg-gray-700 text-white rounded-xl font-bold transition text-sm"
-              >
-                {isSavingConfig ? "⏳ সেভ হচ্ছে..." : "💾 সব সেটিংস Firebase-এ সেভ করুন"}
-              </button>
-
-              {/* Danger zone */}
-              <div className="bg-red-50 dark:bg-red-950/30 rounded-2xl border border-red-100 dark:border-red-900 p-6">
-                <h3 className="font-bold text-red-700 dark:text-red-400 mb-1">⚠️ বিপদজনক এলাকা</h3>
-                <p className="text-xs text-red-400 dark:text-red-400/70 mb-4">এই কাজগুলো পূর্বাবস্থায় ফেরানো যাবে না।</p>
-                <button
-                  onClick={handleResetAttempts}
-                  className="py-2.5 px-5 bg-white dark:bg-gray-900 text-red-600 dark:text-red-400 border border-red-300 dark:border-red-800 rounded-xl text-sm font-bold hover:bg-red-100 dark:hover:bg-red-950/40 transition"
-                >
-                  🗑 সব Attempt রিসেট করুন
+              <div className="bg-white dark:bg-slate-900 rounded-2xl border border-red-200 dark:border-red-900/40 p-4">
+                <h3 className="text-sm font-extrabold text-red-600 dark:text-red-400 mb-3">⚠️ বিপজ্জনক এলাকা</h3>
+                <button onClick={() => setConfirmModal({ open: true, msg: "সকল ইউজারের স্কোর ০ হয়ে যাবে! নিশ্চিত?", onOk: resetLeaderboard })} className="w-full bg-red-500 hover:bg-red-600 text-white text-sm font-bold py-3 rounded-xl transition">
+                  🔁 সব স্কোর রিসেট করুন (Leaderboard Clear)
                 </button>
               </div>
             </div>
-          </div>
-        )}
+          )}
 
-      </main>
+        </>}
+      </div>
+
+      {qModal.open && <QuestionModal initial={qModal.data} onSave={saveQuestion} onClose={() => setQModal({ open: false })} />}
+      {sModal.open && <SubjectModal initial={sModal.data} onSave={saveSubject} onClose={() => setSModal({ open: false })} />}
+
+      {/* ✅ JSON Upload Modal */}
+      {jsonModal?.open && (
+        <JsonUploadModal
+          type={jsonModal.type}
+          subjects={subjects}
+          onClose={() => setJsonModal(null)}
+          onSuccess={() => fetchTab(jsonModal.type === "mcq" ? "questions" : "subjects")}
+          showToast={showToast}
+        />
+      )}
+    </div>
+  );
+}
+
+// ─── Question Modal ────────────────────────────────────────────────────────────
+function QuestionModal({ initial, onSave, onClose }: {
+  initial?: Question;
+  onSave: (data: Omit<Question, "id">, id?: string) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [form, setForm] = useState({ q: initial?.q || "", a: initial?.a || "", b: initial?.b || "", c: initial?.c || "", d: initial?.d || "", correct: initial?.correct || "a" });
+  const [saving, setSaving] = useState(false);
+
+  const handleSubmit = async () => {
+    if (!form.q || !form.a || !form.b || !form.c || !form.d) { alert("সব ঘর পূরণ করুন!"); return; }
+    setSaving(true);
+    await onSave(form as any, initial?.id);
+    setSaving(false);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 p-0 sm:p-4">
+      <div className="w-full sm:max-w-lg bg-white dark:bg-slate-900 rounded-t-2xl sm:rounded-2xl border border-slate-200 dark:border-slate-800 max-h-[90vh] overflow-y-auto">
+        <div className="flex items-center justify-between p-4 border-b border-slate-200 dark:border-slate-800 sticky top-0 bg-white dark:bg-slate-900">
+          <h3 className="font-extrabold text-slate-800 dark:text-slate-100">{initial ? "প্রশ্ন সম্পাদনা" : "নতুন প্রশ্ন"}</h3>
+          <button onClick={onClose} className="text-slate-400 text-xl hover:text-slate-600 dark:hover:text-slate-200">✕</button>
+        </div>
+        <div className="p-4 space-y-3">
+          <div>
+            <label className="text-xs font-bold text-slate-500 dark:text-slate-400 mb-1 block">প্রশ্ন *</label>
+            <textarea value={form.q} onChange={e => setForm(f => ({ ...f, q: e.target.value }))} rows={2} placeholder="প্রশ্নটি লিখুন" className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 p-3 text-sm focus:outline-none focus:border-indigo-400 resize-none" />
+          </div>
+          {(["a", "b", "c", "d"] as const).map(k => (
+            <div key={k}>
+              <label className="text-xs font-bold text-slate-500 dark:text-slate-400 mb-1 block uppercase">{k} অপশন *</label>
+              <input value={form[k]} onChange={e => setForm(f => ({ ...f, [k]: e.target.value }))} placeholder={`${k.toUpperCase()} এর উত্তর`} className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 p-3 text-sm focus:outline-none focus:border-indigo-400" />
+            </div>
+          ))}
+          <div>
+            <label className="text-xs font-bold text-slate-500 dark:text-slate-400 mb-1 block">সঠিক উত্তর *</label>
+            <div className="flex gap-2">
+              {(["a", "b", "c", "d"] as const).map(k => (
+                <button key={k} onClick={() => setForm(f => ({ ...f, correct: k }))} className={`flex-1 py-2 rounded-xl text-sm font-bold uppercase border-2 transition ${form.correct === k ? "border-green-500 bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-400" : "border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400"}`}>{k}</button>
+              ))}
+            </div>
+          </div>
+          <div className="flex gap-3 pt-2">
+            <button onClick={onClose} className="flex-1 py-3 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 font-bold text-sm">বাতিল</button>
+            <button onClick={handleSubmit} disabled={saving} className="flex-1 py-3 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-sm disabled:opacity-60 transition">
+              {saving ? "সেভ হচ্ছে..." : "সেভ করুন ✓"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Subject Modal ────────────────────────────────────────────────────────────
+function SubjectModal({ initial, onSave, onClose }: {
+  initial?: Subject;
+  onSave: (data: any, id?: string) => Promise<void>;
+  onClose: () => void;
+}) {
+  const toLocalInput = (ts: any) => {
+    if (!ts) return "";
+    const d = ts?.toDate ? ts.toDate() : new Date(ts);
+    return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+  };
+
+  const [form, setForm] = useState({ name: initial?.name || "", examId: initial?.examId || "", examDate: toLocalInput(initial?.examDate), durationMinutes: initial?.durationMinutes || 30 });
+  const [prepItems, setPrepItems] = useState<{ question: string; answer: string }[]>(initial?.preparation || []);
+  const [saving, setSaving] = useState(false);
+
+  const addPrep = () => setPrepItems(p => [...p, { question: "", answer: "" }]);
+  const removePrep = (i: number) => setPrepItems(p => p.filter((_, idx) => idx !== i));
+  const updatePrep = (i: number, field: "question" | "answer", val: string) => setPrepItems(p => p.map((item, idx) => idx === i ? { ...item, [field]: val } : item));
+
+  const handleSubmit = async () => {
+    if (!form.name || !form.examId || !form.examDate) { alert("নাম, Exam ID ও তারিখ আবশ্যক!"); return; }
+    setSaving(true);
+    await onSave({ name: form.name, examId: form.examId, examDate: Timestamp.fromDate(new Date(form.examDate)), durationMinutes: Number(form.durationMinutes), preparation: prepItems.filter(p => p.question && p.answer) }, initial?.id);
+    setSaving(false);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 p-0 sm:p-4">
+      <div className="w-full sm:max-w-lg bg-white dark:bg-slate-900 rounded-t-2xl sm:rounded-2xl border border-slate-200 dark:border-slate-800 max-h-[90vh] overflow-y-auto">
+        <div className="flex items-center justify-between p-4 border-b border-slate-200 dark:border-slate-800 sticky top-0 bg-white dark:bg-slate-900">
+          <h3 className="font-extrabold text-slate-800 dark:text-slate-100">{initial ? "বিষয় সম্পাদনা" : "নতুন বিষয়"}</h3>
+          <button onClick={onClose} className="text-slate-400 text-xl hover:text-slate-600 dark:hover:text-slate-200">✕</button>
+        </div>
+        <div className="p-4 space-y-3">
+          {[{ label: "বিষয়ের নাম *", key: "name", placeholder: "যেমন: Business Mathematics" }, { label: "Exam ID *", key: "examId", placeholder: "যেমন: math_2025" }].map(f => (
+            <div key={f.key}>
+              <label className="text-xs font-bold text-slate-500 dark:text-slate-400 mb-1 block">{f.label}</label>
+              <input value={(form as any)[f.key]} onChange={e => setForm(p => ({ ...p, [f.key]: e.target.value }))} placeholder={f.placeholder} className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 p-3 text-sm focus:outline-none focus:border-indigo-400" />
+            </div>
+          ))}
+          <div>
+            <label className="text-xs font-bold text-slate-500 dark:text-slate-400 mb-1 block">পরীক্ষার তারিখ ও সময় *</label>
+            <input type="datetime-local" value={form.examDate} onChange={e => setForm(p => ({ ...p, examDate: e.target.value }))} className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 p-3 text-sm focus:outline-none focus:border-indigo-400" />
+          </div>
+          <div>
+            <label className="text-xs font-bold text-slate-500 dark:text-slate-400 mb-1 block">সময়কাল (মিনিট)</label>
+            <input type="number" value={form.durationMinutes} onChange={e => setForm(p => ({ ...p, durationMinutes: Number(e.target.value) }))} className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 p-3 text-sm focus:outline-none focus:border-indigo-400" />
+          </div>
+          <div className="border-t border-slate-100 dark:border-slate-800 pt-3">
+            <div className="flex items-center justify-between mb-2">
+              <label className="text-xs font-bold text-slate-600 dark:text-slate-300">📚 প্রস্তুতি প্রশ্ন ও উত্তর</label>
+              <button onClick={addPrep} className="text-xs bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 px-3 py-1.5 rounded-lg font-bold hover:bg-indigo-100 transition">+ যোগ করুন</button>
+            </div>
+            {prepItems.map((item, i) => (
+              <div key={i} className="bg-slate-50 dark:bg-slate-800/60 rounded-xl p-3 mb-2 space-y-2">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-xs font-bold text-slate-400">#{i + 1}</span>
+                  <button onClick={() => removePrep(i)} className="text-xs text-red-500 font-bold">✕ সরান</button>
+                </div>
+                <input value={item.question} onChange={e => updatePrep(i, "question", e.target.value)} placeholder="প্রশ্ন" className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 p-2.5 text-sm focus:outline-none focus:border-indigo-400" />
+                <input value={item.answer} onChange={e => updatePrep(i, "answer", e.target.value)} placeholder="উত্তর" className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 p-2.5 text-sm focus:outline-none focus:border-green-400" />
+              </div>
+            ))}
+          </div>
+          <div className="flex gap-3 pt-2">
+            <button onClick={onClose} className="flex-1 py-3 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 font-bold text-sm">বাতিল</button>
+            <button onClick={handleSubmit} disabled={saving} className="flex-1 py-3 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-sm disabled:opacity-60 transition">
+              {saving ? "সেভ হচ্ছে..." : "সেভ করুন ✓"}
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

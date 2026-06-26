@@ -26,8 +26,16 @@ export default function QuizPage() {
         const configSnap = await getDoc(doc(db, "settings", "exam_config"));
         const examId = configSnap.data()?.current_exam_id || "default_exam";
 
-        const attemptSnap = await getDoc(doc(db, "user_attempts", `${user.uid}_${examId}`));
-        if (attemptSnap.exists()) { setHasAttempted(true); }
+        // ✅ ইউজারের প্রোফাইল ডাটা থেকে retakeAccess চেক করা হচ্ছে।
+        // অ্যাডমিন প্যানেল থেকে নির্দিষ্ট কোনো ইউজারকে retakeAccess = true করে দিলে
+        // সে আগে পরীক্ষা দিয়ে থাকলেও আবার দিতে পারবে।
+        const userSnap = await getDoc(doc(db, "users", user.uid));
+        const retakeAccess = userSnap.data()?.retakeAccess === true;
+
+        if (!retakeAccess) {
+          const attemptSnap = await getDoc(doc(db, "user_attempts", `${user.uid}_${examId}`));
+          if (attemptSnap.exists()) { setHasAttempted(true); }
+        }
 
         const qSnap = await getDocs(collection(db, "questions"));
         const fetchedQuestions = qSnap.docs.map(d => ({ id: d.id, ...d.data() }));
@@ -70,7 +78,9 @@ export default function QuizPage() {
     }
   };
 
-  // ✅ এখানেই মূল পরিবর্তন — displayName সহ save হবে
+  // ✅ এখানেই মূল পরিবর্তন — displayName সহ save হবে, এবং retake হলে
+  // total_score-এ পুরনো স্কোর বাদ দিয়ে নতুন স্কোরের পার্থক্য যোগ হবে
+  // (একই exam বারবার দিলে যেন লিডারবোর্ডের স্কোর ভুলভাবে বেড়ে না যায়)
   const submitFinalScore = async (finalScore: number) => {
     if (!auth.currentUser) return;
     setIsSubmitting(true);
@@ -89,8 +99,15 @@ export default function QuizPage() {
       const configSnap = await getDoc(doc(db, "settings", "exam_config"));
       const examId = configSnap.data()?.current_exam_id || "default_exam";
 
+      // আগের attempt (যদি থাকে) থেকে পুরনো স্কোর বের করা — retake-এর সময়
+      // total_score ডাবল কাউন্ট হওয়া ঠেকাতে
+      const attemptRef = doc(db, "user_attempts", `${uid}_${examId}`);
+      const prevAttemptSnap = await getDoc(attemptRef);
+      const prevScore = prevAttemptSnap.exists() ? (prevAttemptSnap.data()?.score || 0) : 0;
+      const scoreDelta = finalScore - prevScore;
+
       // ✅ displayName ও email সহ save
-      await setDoc(doc(db, "user_attempts", `${uid}_${examId}`), {
+      await setDoc(attemptRef, {
         uid,
         examId,
         score: finalScore,
@@ -101,7 +118,7 @@ export default function QuizPage() {
       });
 
       await updateDoc(doc(db, "users", uid), {
-        total_score: increment(finalScore)
+        total_score: increment(scoreDelta)
       });
     } catch (error) {
       console.error("Submit Error:", error);
