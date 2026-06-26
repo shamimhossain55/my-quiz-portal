@@ -31,6 +31,7 @@ export default function DashboardPage() {
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [attemptedExamIds, setAttemptedExamIds] = useState<Set<string>>(new Set());
   const [totalAttempts, setTotalAttempts] = useState(0);
+  const [totalQuestionsSum, setTotalQuestionsSum] = useState(0);
   const [loading, setLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [newName, setNewName] = useState("");
@@ -130,6 +131,10 @@ export default function DashboardPage() {
         .filter((a) => a.uid === currentUser.uid);
       setAttemptedExamIds(new Set(myAttempts.map((a) => a.examId)));
       setTotalAttempts(myAttempts.length);
+      // ✅ প্রতিটা exam-এ প্রশ্ন সংখ্যা ভিন্ন হতে পারে, তাই fixed 10 ধরে না নিয়ে
+      // প্রতিটা attempt-এ আসলে কত প্রশ্ন ছিল (a.total) তা যোগ করে নির্ভুল accuracy বের করা হচ্ছে
+      const questionsSum = myAttempts.reduce((sum, a) => sum + (a.total || 0), 0);
+      setTotalQuestionsSum(questionsSum);
 
       // নোটিশ
       const noticeSnap = await getDoc(doc(db, "settings", "notice"));
@@ -232,8 +237,8 @@ export default function DashboardPage() {
   );
 
   const totalCorrect = userData?.total_score || 0;
-  const avgScore = totalAttempts > 0 ? Math.round((totalCorrect / (totalAttempts * 10)) * 100) : 0;
-  const badge = getBadge(totalCorrect, totalAttempts * 10);
+  const avgScore = totalQuestionsSum > 0 ? Math.round((totalCorrect / totalQuestionsSum) * 100) : 0;
+  const badge = getBadge(totalCorrect, totalQuestionsSum);
 
   const AvatarOrInitial = ({ size = "w-14 h-14", textSize = "text-xl" }: { size?: string; textSize?: string }) =>
     userData?.photoURL ? (
@@ -252,7 +257,7 @@ export default function DashboardPage() {
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950 pb-8 sm:pb-16 transition-colors duration-300">
 
       {/* ✅ Navbar — Mobile First */}
-      <nav className="bg-white/80 dark:bg-slate-900/80 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 px-4 py-3 flex items-center justify-between sticky top-0 z-10">
+      <nav className="bg-white/80 dark:bg-slate-900/80 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 px-4 py-3 flex items-center justify-between sticky top-0 z-10 shadow-sm">
         <div className="flex items-center gap-1.5">
           <span className="text-lg">🎯</span>
           <h1 className="text-base font-extrabold text-slate-800 dark:text-slate-100 tracking-tight">কুইজ পোর্টাল</h1>
@@ -299,16 +304,16 @@ export default function DashboardPage() {
 
       {/* ✅ Notice Board — Mobile First */}
       {notice && (
-        <div className="bg-amber-50/70 dark:bg-amber-950/30 border-b border-amber-100 dark:border-amber-900 px-4 py-2.5 flex items-start gap-2">
-          <span className="text-amber-600 dark:text-amber-400 font-bold text-xs shrink-0 mt-0.5">📢 নোটিশ:</span>
-          <p className="text-amber-700 dark:text-amber-300 text-xs leading-relaxed">{notice}</p>
+        <div className="bg-amber-50/70 dark:bg-amber-950/30 border-b border-amber-100 dark:border-amber-900 px-4 py-2.5 flex items-start gap-2.5">
+          <span className="shrink-0 mt-0.5 w-5 h-5 rounded-full bg-amber-100 dark:bg-amber-900/60 flex items-center justify-center text-[10px]">📢</span>
+          <p className="text-amber-700 dark:text-amber-300 text-xs leading-relaxed"><span className="font-bold">নোটিশ: </span>{notice}</p>
         </div>
       )}
 
       <div className="max-w-6xl mx-auto px-3 sm:px-4 mt-4 sm:mt-8 space-y-5 sm:space-y-8">
 
-        {/* ✅ প্রোফাইল হিরো কার্ড */}
-        <div className="relative overflow-hidden rounded-2xl sm:rounded-3xl bg-gradient-to-br from-indigo-600 via-indigo-500 to-violet-600 p-4 sm:p-8 text-white shadow-lg shadow-indigo-500/20">
+        {/* ✅ প্রোফাইল হিরো কার্ড (কালার আপগ্রেড করা হয়েছে) */}
+        <div className="relative overflow-hidden rounded-2xl sm:rounded-3xl bg-gradient-to-br from-indigo-600 via-violet-500 to-purple-600 p-4 sm:p-8 text-white shadow-lg shadow-indigo-500/20">
           <div className="absolute -right-10 -top-10 w-48 h-48 rounded-full bg-white/10"></div>
           <div className="absolute -right-4 bottom-0 w-28 h-28 rounded-full bg-white/10"></div>
           <div className="relative flex flex-col sm:flex-row sm:items-center justify-between gap-6">
@@ -381,18 +386,26 @@ export default function DashboardPage() {
                 return (
                   <div
                     key={subject.id}
-                    className="group bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4 sm:p-5 flex flex-col justify-between hover:shadow-md hover:border-indigo-200 dark:hover:border-indigo-800 transition active:scale-[0.99]"
+                    className="group relative overflow-hidden bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4 sm:p-5 flex flex-col justify-between hover:shadow-lg hover:shadow-slate-200/50 dark:hover:shadow-none hover:border-indigo-200 dark:hover:border-indigo-800 transition-all duration-200 active:scale-[0.99]"
                   >
+                    {/* ✅ স্ট্যাটাস অনুযায়ী বাম পাশে রঙের একটা accent bar */}
+                    <div
+                      className={`absolute left-0 top-0 bottom-0 w-1 ${
+                        isLive ? "bg-rose-400" : isDone ? "bg-green-400" : "bg-indigo-400"
+                      }`}
+                    />
+
                     <div>
                       <div className="flex items-start justify-between gap-2 mb-3">
                         <h4 className="font-bold text-slate-800 dark:text-slate-100 leading-snug">{subject.name}</h4>
-                        {isDone ? (
-                          <span className="text-[11px] font-bold px-2 py-1 rounded-full bg-green-50 text-green-700 dark:bg-green-400/10 dark:text-green-300 shrink-0">
-                            সম্পন্ন
-                          </span>
-                        ) : isLive ? (
-                          <span className="text-[11px] font-bold px-2 py-1 rounded-full bg-rose-50 text-rose-600 dark:bg-rose-400/10 dark:text-rose-300 shrink-0 animate-pulse">
+                        {isLive ? (
+                          <span className="flex items-center gap-1 text-[11px] font-bold px-2 py-1 rounded-full bg-rose-50 text-rose-600 dark:bg-rose-400/10 dark:text-rose-300 shrink-0">
+                            <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse" />
                             লাইভ
+                          </span>
+                        ) : isDone ? (
+                          <span className="text-[11px] font-bold px-2 py-1 rounded-full bg-green-50 text-green-700 dark:bg-green-400/10 dark:text-green-300 shrink-0">
+                            ✅ সম্পন্ন
                           </span>
                         ) : (
                           <span className="text-[11px] font-bold px-2 py-1 rounded-full bg-blue-50 text-blue-600 dark:bg-blue-400/10 dark:text-blue-300 shrink-0">
@@ -402,10 +415,10 @@ export default function DashboardPage() {
                       </div>
 
                       <div className="bg-slate-50 dark:bg-slate-800/60 rounded-xl p-3 text-center border border-slate-100 dark:border-slate-800">
-                        {isDone ? (
-                          <p className="text-sm font-bold text-green-600 dark:text-green-400">আপনি এই পরীক্ষা দিয়েছেন ✅</p>
-                        ) : isLive ? (
+                        {isLive ? (
                           <p className="text-sm font-bold text-rose-600 dark:text-rose-400">পরীক্ষা চলছে — এখনই অংশ নিন</p>
+                        ) : isDone ? (
+                          <p className="text-sm font-bold text-green-600 dark:text-green-400">আপনি এই পরীক্ষা দিয়েছেন ✅</p>
                         ) : (
                           <>
                             <p className="text-[11px] text-slate-500 dark:text-slate-400 mb-1">শুরু হতে বাকি</p>
@@ -415,9 +428,18 @@ export default function DashboardPage() {
                           </>
                         )}
                       </div>
-                      <p className="text-[11px] text-slate-400 dark:text-slate-500 mt-2 text-center">
-                        ⏳ সময়: {subject.durationMinutes || 30} মিনিট
-                      </p>
+
+                      <div className="flex items-center justify-between mt-2">
+                        <p className="text-[11px] text-slate-400 dark:text-slate-500">
+                          ⏳ {subject.durationMinutes || 30} মিনিট
+                        </p>
+                        {/* ✅ আগে দেওয়া থাকলে এবার দিলে এটা যে practice/re-attempt তা স্পষ্ট করে জানানো হচ্ছে */}
+                        {isDone && (
+                          <p className="text-[11px] font-bold text-amber-600 dark:text-amber-400">
+                            🔁 আবার দিলে প্র্যাকটিস হিসেবে গণ্য হবে
+                          </p>
+                        )}
+                      </div>
                     </div>
 
                     <div className="mt-4 flex gap-2">
@@ -439,18 +461,21 @@ export default function DashboardPage() {
                       >
                         📘 প্রস্তুতি
                       </button>
+                      {/* ✅ isDone হলেও বাটন disabled না — বার বার দেওয়া যাবে,
+                          শুধু প্রথমবারের স্কোরই ডাটাবেসে সেভ থাকে (quiz page এ হ্যান্ডল হয়) */}
                       <button
                         onClick={() => router.push(`/quiz?subject=${subject.examId}`)}
-                        disabled={!isLive || isDone}
+                        disabled={!isLive}
+                        title={isDone ? "আগে একবার দেওয়া হয়েছে — এবার দিলে এটি প্র্যাকটিস অ্যাটেম্পট হবে" : undefined}
                         className={`flex-1 py-2.5 rounded-xl font-bold text-sm text-white transition ${
-                          isDone
+                          !isLive
                             ? "bg-slate-300 dark:bg-slate-700 cursor-not-allowed"
-                            : isLive
-                            ? "bg-indigo-600 hover:bg-indigo-700 active:scale-95"
-                            : "bg-slate-300 dark:bg-slate-700 cursor-not-allowed"
+                            : isDone
+                            ? "bg-amber-600 hover:bg-amber-700 active:scale-95"
+                            : "bg-indigo-600 hover:bg-indigo-700 active:scale-95"
                         }`}
                       >
-                        {isDone ? "সম্পন্ন" : isLive ? "পরীক্ষা দিন →" : "অপেক্ষা করুন"}
+                        {!isLive ? "অপেক্ষা করুন" : isDone ? "আবার দিন (প্র্যাকটিস) ↻" : "পরীক্ষা দিন →"}
                       </button>
                     </div>
                   </div>
@@ -586,6 +611,7 @@ export default function DashboardPage() {
           </div>
         </div>
       )}
+
       {/* ✅ প্রস্তুতি Modal — countdown চলাকালীন প্রশ্ন+উত্তর দেখার জন্য */}
       {preparationSubject && (() => {
         const examTime = preparationSubject.examDate?.toDate
