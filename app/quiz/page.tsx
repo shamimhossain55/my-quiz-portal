@@ -40,9 +40,6 @@ export default function QuizPage() {
   const [flaggedForCheating, setFlaggedForCheating] = useState(false);
   const [autoSubmitReason, setAutoSubmitReason] = useState<string | null>(null);
 
-  // ✅ Custom Submission Modal State
-  const [showSubmitModal, setShowSubmitModal] = useState(false);
-
   const warningCountRef = useRef(0);
   const examStartedRef = useRef(false);
   const finalizedRef = useRef(false); // ডবল-সাবমিট আটকানোর জন্য
@@ -52,7 +49,7 @@ export default function QuizPage() {
   const searchParams = useSearchParams();
   const subjectParam = searchParams.get("subject");
 
-  // ✅ প্রাথমিক ডেটা লোড: ইউজার, exam কনфিগ, প্রশ্ন, আগের attempt চেক
+  // ✅ প্রাথমিক ডেটা লোড: ইউজার, exam কনফিগ, প্রশ্ন, আগের attempt চেক
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       if (!currentUser) { router.push("/"); return; }
@@ -95,7 +92,7 @@ export default function QuizPage() {
         const attemptSnap = await getDoc(doc(db, "user_attempts", `${currentUser.uid}_${resolvedExamId}`));
         setIsFirstAttempt(!attemptSnap.exists());
 
-        // ✅ প্রশ্ন লোড — subject-ভিত্তিক হলে সেই subject এর প্রশ্ন, ना পেলে সব প্রশ্ন (legacy fallback)
+        // ✅ প্রশ্ন লোড — subject-ভিত্তিক হলে সেই subject এর প্রশ্ন, না পেলে সব প্রশ্ন (legacy fallback)
         let fetchedQuestions: any[] = [];
         if (subjectParam) {
           const qQ = query(collection(db, "questions"), where("examId", "==", resolvedExamId));
@@ -215,19 +212,6 @@ export default function QuizPage() {
   };
   const jumpTo = (idx: number) => setCurrentIdx(idx);
 
-  // ✅ হিসাব করা কতটি প্রশ্নের উত্তর দেওয়া বাকি আছে
-  const getUnansweredCount = () => {
-    let count = 0;
-    questions.forEach((_, idx) => {
-      if (answers[idx] === undefined || answers[idx] === null) {
-        count++;
-      }
-    });
-    return count;
-  };
-
-  const unansweredCount = getUnansweredCount();
-
   // ✅ ফাইনাল সাবমিট — ম্যানুয়াল, সময় শেষে, বা cheating detect হলে — সবগুলো এই একই ফাংশন দিয়ে যায়
   const handleSubmit = async (reason: "manual" | "time" | "cheating") => {
     if (finalizedRef.current) return;
@@ -313,14 +297,14 @@ export default function QuizPage() {
   const getOptionStyle = (key: string) => {
     const selected = answers[currentIdx];
     return selected === key
-      ? "border-indigo-500 bg-indigo-50/50 dark:bg-indigo-500/10 text-indigo-700 dark:text-indigo-300 font-bold ring-2 ring-indigo-500/20"
-      : "border-slate-200 dark:border-slate-700 hover:border-violet-400 dark:hover:border-violet-500 hover:bg-slate-50 dark:hover:bg-slate-800/60 text-slate-700 dark:text-slate-200";
+      ? "border-emerald-500 bg-emerald-50 dark:bg-emerald-400/10 text-emerald-700 dark:text-emerald-300 font-bold"
+      : "border-slate-200 dark:border-slate-700 hover:border-emerald-300 dark:hover:border-emerald-700 hover:bg-slate-50 dark:hover:bg-slate-800/60 text-slate-700 dark:text-slate-200";
   };
 
   if (loading) return (
     <div className="flex min-h-screen items-center justify-center bg-slate-50 dark:bg-slate-950">
       <div className="text-center">
-        <div className="w-10 h-10 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto mb-3"></div>
+        <div className="w-10 h-10 border-4 border-emerald-600 border-t-transparent rounded-full animate-spin mx-auto mb-3"></div>
         <p className="text-slate-500 dark:text-slate-400 font-bold">লোড হচ্ছে...</p>
       </div>
     </div>
@@ -331,6 +315,7 @@ export default function QuizPage() {
     const totalCorrect = finalResults.filter(r => r.correct).length;
     const totalWrong = finalResults.length - totalCorrect;
     const percentage = questions.length > 0 ? Math.round((totalCorrect / questions.length) * 100) : 0;
+    const resultColor = percentage >= 70 ? "emerald" : percentage >= 40 ? "amber" : "rose";
 
     return (
       <div className="min-h-screen bg-slate-50 dark:bg-slate-950 pb-10 transition-colors duration-300">
@@ -357,8 +342,8 @@ export default function QuizPage() {
             </div>
           )}
 
-          {/* ✅ মাল্টি-কালার মডার্ন গ্র্যাডিয়েন্ট হিরো কার্ড */}
-          <div className="relative overflow-hidden rounded-2xl sm:rounded-3xl bg-gradient-to-br from-indigo-600 via-violet-600 to-purple-600 p-6 sm:p-8 text-white shadow-lg shadow-indigo-500/20 text-center mb-5">
+          {/* ✅ স্কোর হিরো কার্ড — ড্যাশবোর্ডের গ্র্যাডিয়েন্ট থিমের সাথে মিলিয়ে */}
+          <div className="relative overflow-hidden rounded-2xl sm:rounded-3xl bg-gradient-to-br from-emerald-600 via-emerald-500 to-teal-600 p-6 sm:p-8 text-white shadow-lg shadow-emerald-500/20 text-center mb-5">
             <div className="absolute -right-10 -top-10 w-48 h-48 rounded-full bg-white/10"></div>
             <div className="absolute -left-8 -bottom-8 w-32 h-32 rounded-full bg-white/10"></div>
             <div className="relative">
@@ -366,26 +351,26 @@ export default function QuizPage() {
               <h2 className="text-xl sm:text-2xl font-extrabold tracking-tight mb-1">
                 {subjectName ? `${subjectName} — ` : ""}কুইজ শেষ!
               </h2>
-              <p className="text-indigo-100 text-sm mb-6">আপনার ফলাফল প্রস্তুত হয়েছে</p>
+              <p className="text-emerald-100 text-sm mb-6">আপনার ফলাফল প্রস্তুত হয়েছে</p>
 
               <div className="grid grid-cols-3 gap-2.5 sm:gap-3 mb-5">
                 <div className="bg-white/15 rounded-xl sm:rounded-2xl p-3 backdrop-blur-sm">
                   <p className="text-xl sm:text-2xl font-extrabold">{totalCorrect}/{questions.length}</p>
-                  <p className="text-[11px] font-medium text-indigo-100 mt-0.5">মোট স্কোর</p>
+                  <p className="text-[11px] font-medium text-emerald-100 mt-0.5">মোট স্কোর</p>
                 </div>
                 <div className="bg-white/15 rounded-xl sm:rounded-2xl p-3 backdrop-blur-sm">
-                  <p className="text-xl sm:text-2xl font-extrabold text-emerald-300">{totalCorrect}</p>
-                  <p className="text-[11px] font-medium text-indigo-100 mt-0.5">সঠিক ✅</p>
+                  <p className="text-xl sm:text-2xl font-extrabold">{totalCorrect}</p>
+                  <p className="text-[11px] font-medium text-emerald-100 mt-0.5">সঠিক ✅</p>
                 </div>
                 <div className="bg-white/15 rounded-xl sm:rounded-2xl p-3 backdrop-blur-sm">
-                  <p className="text-xl sm:text-2xl font-extrabold text-rose-300">{totalWrong}</p>
-                  <p className="text-[11px] font-medium text-indigo-100 mt-0.5">ভুল ❌</p>
+                  <p className="text-xl sm:text-2xl font-extrabold">{totalWrong}</p>
+                  <p className="text-[11px] font-medium text-emerald-100 mt-0.5">ভুল ❌</p>
                 </div>
               </div>
 
               <div className="w-full bg-white/20 rounded-full h-2.5 mb-2 overflow-hidden">
                 <div
-                  className="h-2.5 rounded-full bg-gradient-to-r from-emerald-400 to-teal-300 transition-all duration-700"
+                  className="h-2.5 rounded-full bg-white transition-all duration-700"
                   style={{ width: `${percentage}%` }}
                 />
               </div>
@@ -401,12 +386,12 @@ export default function QuizPage() {
                   key={q.id}
                   className={`bg-white dark:bg-slate-900 rounded-2xl border p-4 sm:p-5 ${
                     result.correct
-                      ? "border-emerald-100 dark:border-emerald-900/40"
-                      : "border-rose-100 dark:border-rose-900/40"
+                      ? "border-emerald-100 dark:border-emerald-900"
+                      : "border-rose-100 dark:border-rose-900"
                   }`}
                 >
                   <div className="flex items-start gap-3">
-                    <span className={`shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-sm font-bold ${
+                    <span className={`shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-sm ${
                       result.correct
                         ? "bg-emerald-50 dark:bg-emerald-400/10 text-emerald-600 dark:text-emerald-400"
                         : "bg-rose-50 dark:bg-rose-400/10 text-rose-600 dark:text-rose-400"
@@ -449,7 +434,7 @@ export default function QuizPage() {
 
           <button
             onClick={() => router.push("/dashboard")}
-            className="w-full mt-6 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-700 hover:to-violet-700 text-white py-4 rounded-xl font-bold transition shadow-lg shadow-indigo-500/20 active:scale-[0.99]"
+            className="w-full mt-6 bg-emerald-600 hover:bg-emerald-700 text-white py-4 rounded-xl font-bold transition active:scale-[0.99]"
           >
             ড্যাশবোর্ডে ফিরে যান 🏠
           </button>
@@ -462,15 +447,15 @@ export default function QuizPage() {
   if (!examStarted) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-slate-50 dark:bg-slate-950 p-4 transition-colors duration-300">
-        <div className="max-w-md w-full bg-white dark:bg-slate-900 rounded-2xl sm:rounded-3xl shadow-xl shadow-slate-200/50 dark:shadow-none border border-slate-200 dark:border-slate-800 overflow-hidden">
+        <div className="max-w-md w-full bg-white dark:bg-slate-900 rounded-2xl sm:rounded-3xl shadow-lg shadow-slate-200/50 dark:shadow-none border border-slate-200 dark:border-slate-800 overflow-hidden">
 
-          {/* ✅ বহু রঙের ভাইব্রেন্ট গ্র্যাডিয়েন্ট হিরো */}
-          <div className="relative overflow-hidden bg-gradient-to-br from-indigo-600 via-violet-500 to-fuchsia-600 p-6 sm:p-8 text-white text-center">
+          {/* ✅ গ্র্যাডিয়েন্ট হিরো — ড্যাশবোর্ডের থিমের সাথে মিলিয়ে */}
+          <div className="relative overflow-hidden bg-gradient-to-br from-emerald-600 via-emerald-500 to-teal-600 p-6 sm:p-8 text-white text-center">
             <div className="absolute -right-8 -top-8 w-32 h-32 rounded-full bg-white/10"></div>
             <div className="absolute -left-6 -bottom-6 w-24 h-24 rounded-full bg-white/10"></div>
             <p className="relative text-4xl mb-2">📝</p>
             <h2 className="relative text-xl font-extrabold tracking-tight mb-1">{subjectName || "পরীক্ষা"}</h2>
-            <p className="relative text-sm text-indigo-100">{questions.length} টি প্রশ্ন · {durationMinutes} মিনিট সময়</p>
+            <p className="relative text-sm text-emerald-100">{questions.length} টি প্রশ্ন · {durationMinutes} মিনিট সময়</p>
           </div>
 
           <div className="p-6 sm:p-8">
@@ -488,7 +473,7 @@ export default function QuizPage() {
             <button
               onClick={handleStartExam}
               disabled={questions.length === 0}
-              className="w-full bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-700 hover:to-violet-700 text-white py-3.5 rounded-xl font-bold transition shadow-lg shadow-indigo-500/20 active:scale-[0.99] disabled:opacity-50"
+              className="w-full bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white py-3.5 rounded-xl font-bold transition active:scale-[0.99]"
             >
               পরীক্ষা শুরু করুন →
             </button>
@@ -507,11 +492,11 @@ export default function QuizPage() {
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950 p-3 sm:p-6 flex items-center justify-center transition-colors duration-300">
-      <div className="relative max-w-xl w-full bg-white dark:bg-slate-900 p-4 sm:p-8 rounded-2xl sm:rounded-3xl shadow-xl shadow-slate-200/40 dark:shadow-none border border-slate-200 dark:border-slate-800">
+      <div className="max-w-xl w-full bg-white dark:bg-slate-900 p-4 sm:p-8 rounded-2xl sm:rounded-3xl shadow-lg shadow-slate-200/50 dark:shadow-none border border-slate-200 dark:border-slate-800">
 
         {isSubmitting ? (
           <div className="text-center py-10">
-            <div className="w-10 h-10 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+            <div className="w-10 h-10 border-4 border-emerald-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
             <h2 className="text-xl font-bold text-slate-800 dark:text-slate-100">ফলাফল সংরক্ষণ হচ্ছে... ⏳</h2>
           </div>
         ) : (
@@ -523,7 +508,7 @@ export default function QuizPage() {
               </div>
             )}
 
-            {/* ✅ Timer + প্রোগ্রেস (Multi-color Progress Bar) */}
+            {/* ✅ Timer + প্রোগ্রেস */}
             <div className="mb-4 flex items-center justify-between gap-3">
               <div className="flex-1">
                 <div className="flex justify-between text-xs sm:text-sm font-bold text-slate-500 dark:text-slate-400 mb-2">
@@ -532,15 +517,13 @@ export default function QuizPage() {
                 </div>
                 <div className="w-full bg-slate-100 dark:bg-slate-800 rounded-full h-2 overflow-hidden">
                   <div
-                    className="bg-gradient-to-r from-indigo-500 via-violet-500 to-purple-500 h-2 rounded-full transition-all duration-500"
+                    className="bg-gradient-to-r from-emerald-500 to-teal-500 h-2 rounded-full transition-all duration-500"
                     style={{ width: `${((currentIdx) / questions.length) * 100}%` }}
                   />
                 </div>
               </div>
               <div className={`shrink-0 px-3 py-2 rounded-xl font-mono font-bold text-sm sm:text-base ${
-                timeLeft <= 60 
-                  ? "bg-rose-50 dark:bg-rose-400/10 text-rose-600 dark:text-rose-300 animate-pulse" 
-                  : "bg-violet-50 dark:bg-violet-400/10 text-violet-600 dark:text-violet-300"
+                timeLeft <= 60 ? "bg-rose-50 dark:bg-rose-400/10 text-rose-600 dark:text-rose-300 animate-pulse" : "bg-emerald-50 dark:bg-emerald-400/10 text-emerald-600 dark:text-emerald-300"
               }`}>
                 ⏱️ {formatTime(timeLeft)}
               </div>
@@ -554,9 +537,9 @@ export default function QuizPage() {
                   onClick={() => jumpTo(idx)}
                   className={`shrink-0 w-7 h-7 rounded-lg text-xs font-bold flex items-center justify-center transition ${
                     idx === currentIdx
-                      ? "bg-indigo-600 text-white shadow-md shadow-indigo-500/20"
+                      ? "bg-emerald-600 text-white"
                       : answers[idx] != null
-                      ? "bg-violet-100 dark:bg-violet-500/20 text-violet-700 dark:text-violet-300"
+                      ? "bg-emerald-100 dark:bg-emerald-400/10 text-emerald-700 dark:text-emerald-400"
                       : "bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-500"
                   }`}
                 >
@@ -580,7 +563,7 @@ export default function QuizPage() {
                   >
                     <span className={`shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-xs uppercase font-bold ${
                       isSelected
-                        ? "bg-indigo-600 text-white"
+                        ? "bg-emerald-600 text-white"
                         : "bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400"
                     }`}>
                       {key}
@@ -604,79 +587,35 @@ export default function QuizPage() {
               {!isLast ? (
                 <button
                   onClick={goNext}
-                  className="flex-1 py-3.5 rounded-xl font-bold bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-700 hover:to-violet-700 text-white transition shadow-lg shadow-indigo-500/20 active:scale-[0.99]"
+                  className="flex-1 py-3.5 rounded-xl font-bold bg-emerald-600 hover:bg-emerald-700 text-white transition active:scale-[0.99]"
                 >
                   {currentAnswered ? "পরের প্রশ্ন →" : "এড়িয়ে যান →"}
                 </button>
               ) : (
                 <button
-                  onClick={() => setShowSubmitModal(true)}
-                  className="flex-1 py-3.5 rounded-xl font-bold bg-gradient-to-r from-violet-600 to-fuchsia-600 hover:from-violet-700 hover:to-fuchsia-700 text-white transition shadow-lg shadow-violet-500/20 active:scale-[0.99]"
+                  onClick={() => handleSubmit("manual")}
+                  className="flex-1 py-3.5 rounded-xl font-bold bg-teal-600 hover:bg-teal-700 text-white transition active:scale-[0.99]"
                 >
                   পরীক্ষা জমা দিন 🎯
                 </button>
               )}
             </div>
 
-            {/* ✅ যেকোনো সময় জমা দেওয়ার অপশন (এখন কাস্টম মোডাল ওপেন করবে) */}
+            {/* ✅ যেকোনো সময় জমা দেওয়ার অপশন */}
             {!isLast && (
               <button
-                onClick={() => setShowSubmitModal(true)}
-                className="w-full mt-2 text-xs font-bold text-slate-400 dark:text-slate-500 hover:text-indigo-600 dark:hover:text-indigo-400 transition py-1"
+                onClick={() => {
+                  if (confirm("আপনি কি নিশ্চিত যে এখনই পরীক্ষা জমা দিতে চান? বাকি প্রশ্নগুলো এড়িয়ে যাওয়া হিসেবে গণ্য হবে।")) {
+                    handleSubmit("manual");
+                  }
+                }}
+                className="w-full mt-2 text-xs font-bold text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 transition py-1"
               >
                 এখনই পরীক্ষা জমা দিন
               </button>
             )}
           </>
         )}
-
-        {/* ✅ প্রিমিয়াম কাস্টম কনফার্মেশন পপআপ (Custom Submission Modal) */}
-        {showSubmitModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm transition-opacity animate-fadeIn">
-            <div className="relative w-full max-w-md bg-white dark:bg-slate-900 rounded-2xl p-6 shadow-2xl border border-slate-200 dark:border-slate-800 transform scale-100 transition-all">
-              <h3 className="text-xl font-extrabold text-slate-800 dark:text-slate-100 flex items-center gap-2">
-                🎯 পরীক্ষা জমা নিশ্চিতকরণ
-              </h3>
-              <p className="text-sm text-slate-500 dark:text-slate-400 mt-2">
-                আপনি কি নিশ্চিত যে আপনার উত্তরপত্রটি এখনই জমা দিতে চান?
-              </p>
-
-              {/* প্রশ্ন বাকি থাকলে বা সবগুলোর উত্তর দিলে আলাদা ডায়নামিক কার্ড */}
-              {unansweredCount > 0 ? (
-                <div className="mt-4 p-4 rounded-xl bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-900 text-amber-800 dark:text-amber-300 text-sm font-medium flex items-start gap-2">
-                  <span className="text-base">⚠️</span>
-                  <div>
-                    আপনি এখনও <span className="font-extrabold text-rose-600 dark:text-rose-400">{unansweredCount} টি</span> প্রশ্নের উত্তর দেননি! জমা দিলে এগুলো এড়িয়ে যাওয়া (Skip) হিসেবে গণ্য হবে।
-                  </div>
-                </div>
-              ) : (
-                <div className="mt-4 p-4 rounded-xl bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-900 text-emerald-800 dark:text-emerald-300 text-sm font-medium flex items-start gap-2">
-                  <span className="text-base">✨</span>
-                  <div>অভিনন্দন! আপনি সবকটি প্রশ্নের উত্তর সফলভাবে সম্পূর্ণ করেছেন।</div>
-                </div>
-              )}
-
-              <div className="flex gap-3 mt-6">
-                <button
-                  onClick={() => setShowSubmitModal(false)}
-                  className="flex-1 py-3 rounded-xl font-bold border-2 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition text-sm"
-                >
-                  ফিরে যান
-                </button>
-                <button
-                  onClick={() => {
-                    setShowSubmitModal(false);
-                    handleSubmit("manual");
-                  }}
-                  className="flex-1 py-3 rounded-xl font-bold bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-700 hover:to-violet-700 text-white shadow-md shadow-indigo-500/20 transition text-sm"
-                >
-                  হ্যাঁ, জমা দিন
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
       </div>
     </div>
   );
