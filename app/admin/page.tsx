@@ -14,11 +14,13 @@ type Question = {
   id: string; q: string;
   a: string; b: string; c: string; d: string;
   correct: "a" | "b" | "c" | "d";
+  examId?: string; // ✅ কোন subject/exam-এর প্রশ্ন তা নির্দিষ্ট করতে — এটা না থাকলে কুইজ পেজ ভুল প্রশ্ন দেখাবে
 };
 
 type Subject = {
   id: string; name: string; examId: string;
   examDate: any; durationMinutes: number;
+  maxWarnings?: number; // ✅ anti-cheating: কতবার ট্যাব পরিবর্তনের পর অটো-সাবমিট হবে
   preparation?: { question: string; answer: string }[];
 };
 
@@ -181,17 +183,18 @@ function JsonUploadModal({ type, subjects, onClose, onSuccess, showToast }: {
 
   const handleSave = async () => {
     if (!parsed) return;
-    if (type === "preparation" && !selectedSubjectId) {
+    if (!selectedSubjectId) {
       setParseError("কোন বিষয়ে যোগ করবেন সেটি নির্বাচন করুন!");
       return;
     }
     setSaving(true);
     try {
       if (type === "mcq") {
+        const examId = subjects.find(s => s.id === selectedSubjectId)?.examId || "";
         const batch = writeBatch(db);
         parsed.forEach(item => {
           const ref = doc(collection(db, "questions"));
-          batch.set(ref, { q: item.q, a: item.a, b: item.b, c: item.c, d: item.d, correct: item.correct });
+          batch.set(ref, { q: item.q, a: item.a, b: item.b, c: item.c, d: item.d, correct: item.correct, examId });
         });
         await batch.commit();
         showToast(`${parsed.length}টি MCQ প্রশ্ন সফলভাবে যোগ হয়েছে ✅`);
@@ -232,24 +235,25 @@ function JsonUploadModal({ type, subjects, onClose, onSuccess, showToast }: {
           {/* Format Preview */}
           <JsonFormatPreview type={type} />
 
-          {/* Subject selector for preparation */}
-          {type === "preparation" && (
-            <div>
-              <label className="text-xs font-bold text-slate-600 dark:text-slate-300 mb-1.5 block">
-                কোন বিষয়ে প্রস্তুতি প্রশ্ন যোগ করবেন? *
-              </label>
-              <select
-                value={selectedSubjectId}
-                onChange={e => setSelectedSubjectId(e.target.value)}
-                className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 p-3 text-sm focus:outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-400"
-              >
-                <option value="">— বিষয় নির্বাচন করুন —</option>
-                {subjects.map(s => (
-                  <option key={s.id} value={s.id}>{s.name} ({s.examId})</option>
-                ))}
-              </select>
-            </div>
-          )}
+          {/* Subject selector — MCQ এবং প্রস্তুতি দুটোর জন্যই আবশ্যক, যাতে প্রশ্ন সঠিক subject-এ যায় */}
+          <div>
+            <label className="text-xs font-bold text-slate-600 dark:text-slate-300 mb-1.5 block">
+              কোন বিষয়ে {type === "mcq" ? "এই প্রশ্নগুলো" : "প্রস্তুতি প্রশ্ন"} যোগ করবেন? *
+            </label>
+            <select
+              value={selectedSubjectId}
+              onChange={e => setSelectedSubjectId(e.target.value)}
+              className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 p-3 text-sm focus:outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-400"
+            >
+              <option value="">— বিষয় নির্বাচন করুন —</option>
+              {subjects.map(s => (
+                <option key={s.id} value={s.id}>{s.name} ({s.examId})</option>
+              ))}
+            </select>
+            {subjects.length === 0 && (
+              <p className="text-[11px] text-amber-600 dark:text-amber-400 font-bold mt-1">⚠️ এখনো কোনো বিষয় তৈরি করা হয়নি — আগে "বিষয়" ট্যাব থেকে একটি বিষয় তৈরি করুন।</p>
+            )}
+          </div>
 
           {/* JSON Input */}
           <div>
@@ -334,6 +338,7 @@ export default function AdminPage() {
   const [sModal, setSModal] = useState<{ open: boolean; data?: Subject }>({ open: false });
   const [confirmModal, setConfirmModal] = useState<{ open: boolean; msg: string; onOk: () => void } | null>(null);
   const [jsonModal, setJsonModal] = useState<{ open: boolean; type: "mcq" | "preparation" } | null>(null);
+  const [questionFilterExamId, setQuestionFilterExamId] = useState("");
 
   const showToast = (msg: string, type: "success" | "error" = "success") => {
     setToast({ msg, type });
@@ -371,8 +376,12 @@ export default function AdminPage() {
         setNotice(noticeSnap.data()?.text || "");
         setExamConfigId(configSnap.data()?.current_exam_id || "");
       } else if (tab === "questions") {
-        const snap = await getDocs(collection(db, "questions"));
+        const [snap, subSnap] = await Promise.all([
+          getDocs(collection(db, "questions")),
+          getDocs(query(collection(db, "subjects"), orderBy("examDate", "asc"))),
+        ]);
         setQuestions(snap.docs.map(d => ({ id: d.id, ...d.data() } as Question)));
+        setSubjects(subSnap.docs.map(d => ({ id: d.id, ...d.data() } as Subject)));
       } else if (tab === "subjects") {
         const snap = await getDocs(query(collection(db, "subjects"), orderBy("examDate", "asc")));
         setSubjects(snap.docs.map(d => ({ id: d.id, ...d.data() } as Subject)));
@@ -620,11 +629,24 @@ export default function AdminPage() {
             </div>
           )}
 
-          {/* ─── QUESTIONS TAB ───────────────────────────────────────────────── */}
+          {/* QUESTIONS TAB */}
           {activeTab === "questions" && (
             <div className="space-y-4">
               <div className="flex items-center justify-between flex-wrap gap-2 bg-white dark:bg-slate-900 p-3 rounded-xl border border-slate-200 dark:border-slate-800">
-                <p className="text-xs font-bold text-slate-500 dark:text-slate-400">ডাটাবেসে মোট প্রশ্ন রয়েছে: <span className="text-indigo-600 dark:text-indigo-400 font-extrabold">{questions.length}টি</span></p>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <p className="text-xs font-bold text-slate-500 dark:text-slate-400">ডাটাবেসে মোট প্রশ্ন রয়েছে: <span className="text-indigo-600 dark:text-indigo-400 font-extrabold">{questions.length}টি</span></p>
+                  <select
+                    value={questionFilterExamId}
+                    onChange={e => setQuestionFilterExamId(e.target.value)}
+                    className="text-xs font-bold rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-600 dark:text-slate-300 px-2.5 py-2 focus:outline-none focus:border-indigo-400"
+                  >
+                    <option value="">সব বিষয়</option>
+                    <option value="__none__">⚠️ বিষয় বরাদ্দ নেই</option>
+                    {subjects.map(s => (
+                      <option key={s.id} value={s.examId}>{s.name} ({s.examId})</option>
+                    ))}
+                  </select>
+                </div>
                 <div className="flex gap-2">
                   <button
                     onClick={() => setJsonModal({ open: true, type: "mcq" })}
@@ -639,11 +661,22 @@ export default function AdminPage() {
               </div>
 
               <div className="space-y-3">
-                {questions.map((q, idx) => (
+                {questions
+                  .filter(q => !questionFilterExamId || (questionFilterExamId === "__none__" ? !q.examId : q.examId === questionFilterExamId))
+                  .map((q, idx) => {
+                    const subj = subjects.find(s => s.examId === q.examId);
+                    return (
                   <div key={q.id} className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4 shadow-sm hover:border-slate-300 dark:hover:border-slate-700 transition duration-150">
                     <div className="flex items-start gap-3">
                       <span className="text-xs font-extrabold text-slate-400 dark:text-slate-500 mt-0.5 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded">Q{idx + 1}</span>
                       <div className="flex-1 min-w-0">
+                        <div className="mb-2">
+                          {subj ? (
+                            <Badge color="bg-indigo-50 dark:bg-indigo-400/10 text-indigo-600 dark:text-indigo-400">📖 {subj.name}</Badge>
+                          ) : (
+                            <Badge color="bg-amber-50 dark:bg-amber-400/10 text-amber-600 dark:text-amber-400">⚠️ বিষয় বরাদ্দ নেই</Badge>
+                          )}
+                        </div>
                         <p className="text-sm font-bold text-slate-800 dark:text-slate-100 mb-3 leading-relaxed">{q.q}</p>
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
                           {(["a", "b", "c", "d"] as const).map(k => (
@@ -659,10 +692,15 @@ export default function AdminPage() {
                       </div>
                     </div>
                   </div>
-                ))}
+                    );
+                  })}
+                {questions.filter(q => !questionFilterExamId || (questionFilterExamId === "__none__" ? !q.examId : q.examId === questionFilterExamId)).length === 0 && (
+                  <p className="text-center text-sm text-slate-400 py-10">এই ফিল্টারে কোনো প্রশ্ন পাওয়া যায়নি।</p>
+                )}
               </div>
             </div>
           )}
+
 
           {/* ─── SUBJECTS TAB ────────────────────────────────────────────────── */}
           {activeTab === "subjects" && (
@@ -700,6 +738,7 @@ export default function AdminPage() {
                             <p>🔑 <span className="font-bold">Exam ID:</span> {s.examId}</p>
                             <p>📅 <span className="font-bold">তারিখ:</span> {examDate.toLocaleString("bn-BD")}</p>
                             <p>⏱️ <span className="font-bold">ডিউরেশন:</span> {s.durationMinutes} মিনিট | 📚 <span className="font-bold">প্রস্তুতি প্রশ্ন:</span> {s.preparation?.length || 0}টি</p>
+                            <p>🚨 <span className="font-bold">Max Warnings:</span> {s.maxWarnings ?? 3}টি (ট্যাব/স্ক্রিন পরিবর্তন)</p>
                           </div>
                         </div>
                         <div className="flex flex-col gap-1.5 shrink-0">
@@ -845,7 +884,7 @@ export default function AdminPage() {
         </>}
       </div>
 
-      {qModal.open && <QuestionModal initial={qModal.data} onSave={saveQuestion} onClose={() => setQModal({ open: false })} />}
+      {qModal.open && <QuestionModal initial={qModal.data} subjects={subjects} onSave={saveQuestion} onClose={() => setQModal({ open: false })} />}
       {sModal.open && <SubjectModal initial={sModal.data} onSave={saveSubject} onClose={() => setSModal({ open: false })} />}
 
       {/* JSON Upload Modal */}
@@ -863,16 +902,18 @@ export default function AdminPage() {
 }
 
 // ─── Question Modal ────────────────────────────────────────────────────────────
-function QuestionModal({ initial, onSave, onClose }: {
+function QuestionModal({ initial, subjects, onSave, onClose }: {
   initial?: Question;
+  subjects: Subject[];
   onSave: (data: Omit<Question, "id">, id?: string) => Promise<void>;
   onClose: () => void;
 }) {
-  const [form, setForm] = useState({ q: initial?.q || "", a: initial?.a || "", b: initial?.b || "", c: initial?.c || "", d: initial?.d || "", correct: initial?.correct || "a" });
+  const [form, setForm] = useState({ q: initial?.q || "", a: initial?.a || "", b: initial?.b || "", c: initial?.c || "", d: initial?.d || "", correct: initial?.correct || "a", examId: initial?.examId || "" });
   const [saving, setSaving] = useState(false);
 
   const handleSubmit = async () => {
     if (!form.q || !form.a || !form.b || !form.c || !form.d) { alert("সব ঘর পূরণ করুন!"); return; }
+    if (!form.examId) { alert("প্রশ্নটি কোন বিষয়ের তা নির্বাচন করুন!"); return; }
     setSaving(true);
     await onSave(form as any, initial?.id);
     setSaving(false);
@@ -886,6 +927,18 @@ function QuestionModal({ initial, onSave, onClose }: {
           <button onClick={onClose} className="text-slate-400 text-xl hover:text-slate-600 dark:hover:text-slate-200">✕</button>
         </div>
         <div className="p-4 space-y-3.5">
+          <div>
+            <label className="text-xs font-bold text-slate-500 dark:text-slate-400 mb-1 block">এই প্রশ্নটি কোন বিষয়ের? *</label>
+            <select value={form.examId} onChange={e => setForm(f => ({ ...f, examId: e.target.value }))} className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 p-3 text-sm focus:outline-none focus:border-indigo-400">
+              <option value="">— বিষয় নির্বাচন করুন —</option>
+              {subjects.map(s => (
+                <option key={s.id} value={s.examId}>{s.name} ({s.examId})</option>
+              ))}
+            </select>
+            {subjects.length === 0 && (
+              <p className="text-[11px] text-amber-600 dark:text-amber-400 font-bold mt-1">⚠️ আগে "বিষয়" ট্যাব থেকে একটি বিষয় তৈরি করুন।</p>
+            )}
+          </div>
           <div>
             <label className="text-xs font-bold text-slate-500 dark:text-slate-400 mb-1 block">প্রশ্নটির টাইটেল লিখুন *</label>
             <textarea value={form.q} onChange={e => setForm(f => ({ ...f, q: e.target.value }))} rows={2} placeholder="প্রশ্নটি এখানে টাইপ করুন..." className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 p-3 text-sm focus:outline-none focus:border-indigo-400 resize-none" />
@@ -928,7 +981,7 @@ function SubjectModal({ initial, onSave, onClose }: {
     return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
   };
 
-  const [form, setForm] = useState({ name: initial?.name || "", examId: initial?.examId || "", examDate: toLocalInput(initial?.examDate), durationMinutes: initial?.durationMinutes || 30 });
+  const [form, setForm] = useState({ name: initial?.name || "", examId: initial?.examId || "", examDate: toLocalInput(initial?.examDate), durationMinutes: initial?.durationMinutes || 30, maxWarnings: initial?.maxWarnings ?? 3 });
   const [prepItems, setPrepItems] = useState<{ question: string; answer: string }[]>(initial?.preparation || []);
   const [saving, setSaving] = useState(false);
 
@@ -939,7 +992,7 @@ function SubjectModal({ initial, onSave, onClose }: {
   const handleSubmit = async () => {
     if (!form.name || !form.examId || !form.examDate) { alert("নাম, Exam ID ও তারিখ আবশ্যক!"); return; }
     setSaving(true);
-    await onSave({ name: form.name, examId: form.examId, examDate: Timestamp.fromDate(new Date(form.examDate)), durationMinutes: Number(form.durationMinutes), preparation: prepItems.filter(p => p.question && p.answer) }, initial?.id);
+    await onSave({ name: form.name, examId: form.examId, examDate: Timestamp.fromDate(new Date(form.examDate)), durationMinutes: Number(form.durationMinutes), maxWarnings: Number((form as any).maxWarnings), preparation: prepItems.filter(p => p.question && p.answer) }, initial?.id);
     setSaving(false);
   };
 
@@ -964,6 +1017,11 @@ function SubjectModal({ initial, onSave, onClose }: {
           <div>
             <label className="text-xs font-bold text-slate-500 dark:text-slate-400 mb-1 block">পরীক্ষার মোট সময়কাল (মিনিট)</label>
             <input type="number" value={form.durationMinutes} onChange={e => setForm(p => ({ ...p, durationMinutes: Number(e.target.value) }))} className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 p-3 text-sm focus:outline-none focus:border-indigo-400" />
+          </div>
+          <div>
+            <label className="text-xs font-bold text-slate-500 dark:text-slate-400 mb-1 block">এন্টি-চীটিং সীমা (কতবার ট্যাব পরিবর্তন করলে অটো-সাবমিট হবে)</label>
+            <input type="number" min={1} value={(form as any).maxWarnings} onChange={e => setForm(p => ({ ...p, maxWarnings: Number(e.target.value) }))} className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 p-3 text-sm focus:outline-none focus:border-indigo-400" />
+            <p className="text-[11px] text-slate-400 mt-1">ডিফল্ট: 3</p>
           </div>
           
           {/* Preparation material list */}
