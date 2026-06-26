@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, Suspense } from "react";
 import {
   collection, getDocs, doc, updateDoc, increment, setDoc, getDoc,
   query, where
@@ -8,7 +8,24 @@ import { db, auth } from "@/lib/firebase";
 import { useRouter, useSearchParams } from "next/navigation";
 import { onAuthStateChanged } from "firebase/auth";
 
+// ✅ useSearchParams() Next.js-এ Suspense boundary ছাড়া static prerender এর
+// সময় বিল্ড এরর দেয় ("should be wrapped in a suspense boundary"), তাই
+// আসল কন্টেন্ট আলাদা কম্পোনেন্টে রেখে নিচে Suspense দিয়ে wrap করা হয়েছে।
 export default function QuizPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex min-h-screen items-center justify-center bg-slate-50 dark:bg-slate-950">
+          <div className="w-10 h-10 border-4 border-emerald-600 border-t-transparent rounded-full animate-spin"></div>
+        </div>
+      }
+    >
+      <QuizPageContent />
+    </Suspense>
+  );
+}
+
+function QuizPageContent() {
   const [user, setUser] = useState<any>(null);
   const [examId, setExamId] = useState<string>("default_exam");
   const [subjectName, setSubjectName] = useState<string>("");
@@ -26,6 +43,8 @@ export default function QuizPage() {
   const [showFinalResult, setShowFinalResult] = useState(false);
   const [finalResults, setFinalResults] = useState<{ correct: boolean; selected: string | null; answer: string }[]>([]);
   const [finalScore, setFinalScore] = useState(0);
+  // ✅ নেটিভ confirm()/toast এর বদলে কাস্টম সাবমিট কনফার্মেশন পপআপ
+  const [showSubmitModal, setShowSubmitModal] = useState(false);
 
   // ✅ Exam শুরুর স্ক্রিন — fullscreen request করতে user gesture লাগে, তাই
   // প্রথমে একটা "শুরু করুন" বাটন দেখানো হয়
@@ -593,7 +612,7 @@ export default function QuizPage() {
                 </button>
               ) : (
                 <button
-                  onClick={() => handleSubmit("manual")}
+                  onClick={() => setShowSubmitModal(true)}
                   className="flex-1 py-3.5 rounded-xl font-bold bg-teal-600 hover:bg-teal-700 text-white transition active:scale-[0.99]"
                 >
                   পরীক্ষা জমা দিন 🎯
@@ -604,11 +623,7 @@ export default function QuizPage() {
             {/* ✅ যেকোনো সময় জমা দেওয়ার অপশন */}
             {!isLast && (
               <button
-                onClick={() => {
-                  if (confirm("আপনি কি নিশ্চিত যে এখনই পরীক্ষা জমা দিতে চান? বাকি প্রশ্নগুলো এড়িয়ে যাওয়া হিসেবে গণ্য হবে।")) {
-                    handleSubmit("manual");
-                  }
-                }}
+                onClick={() => setShowSubmitModal(true)}
                 className="w-full mt-2 text-xs font-bold text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 transition py-1"
               >
                 এখনই পরীক্ষা জমা দিন
@@ -617,6 +632,64 @@ export default function QuizPage() {
           </>
         )}
       </div>
+
+      {/* ✅ কাস্টম সাবমিট কনফার্মেশন পপআপ — নেটিভ confirm()/toast এর বদলে */}
+      {showSubmitModal && (() => {
+        const answeredCount = questions.reduce((acc, _, idx) => acc + (answers[idx] != null ? 1 : 0), 0);
+        const skippedCount = questions.length - answeredCount;
+        return (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
+            onClick={() => setShowSubmitModal(false)}
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="max-w-sm w-full bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-5 sm:p-6 shadow-xl"
+            >
+              <div className="flex items-center gap-3 mb-3">
+                <span className={`shrink-0 w-10 h-10 rounded-full flex items-center justify-center text-lg ${
+                  skippedCount > 0
+                    ? "bg-amber-50 dark:bg-amber-400/10 text-amber-600 dark:text-amber-400"
+                    : "bg-emerald-50 dark:bg-emerald-400/10 text-emerald-600 dark:text-emerald-400"
+                }`}>
+                  {skippedCount > 0 ? "⚠️" : "🎯"}
+                </span>
+                <h3 className="font-bold text-slate-800 dark:text-slate-100">পরীক্ষা জমা দিতে চান?</h3>
+              </div>
+
+              <p className="text-sm text-slate-500 dark:text-slate-400 mb-4">
+                আপনি <span className="font-bold text-slate-700 dark:text-slate-200">{answeredCount}</span> টি প্রশ্নের উত্তর দিয়েছেন{" "}
+                {questions.length} টির মধ্যে।
+                {skippedCount > 0 && (
+                  <>
+                    {" "}
+                    <span className="font-bold text-amber-600 dark:text-amber-400">{skippedCount} টি প্রশ্ন এড়িয়ে গেছেন</span> —
+                    জমা দিলে সেগুলো ভুল হিসেবে গণ্য হবে।
+                  </>
+                )}
+              </p>
+
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setShowSubmitModal(false)}
+                  className="flex-1 py-3 rounded-xl font-bold border-2 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition"
+                >
+                  আরও দেখি
+                </button>
+                <button
+                  onClick={() => {
+                    setShowSubmitModal(false);
+                    handleSubmit("manual");
+                  }}
+                  className="flex-1 py-3 rounded-xl font-bold bg-emerald-600 hover:bg-emerald-700 text-white transition active:scale-[0.99]"
+                >
+                  জমা দিন ✓
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }

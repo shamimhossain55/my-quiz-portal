@@ -230,7 +230,7 @@ export default function DashboardPage() {
   if (loading) return (
     <div className="flex min-h-screen items-center justify-center bg-slate-50 dark:bg-slate-950">
       <div className="text-center">
-        <div className="w-10 h-10 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto mb-3"></div>
+        <div className="w-10 h-10 border-4 border-emerald-600 border-t-transparent rounded-full animate-spin mx-auto mb-3"></div>
         <p className="text-slate-500 dark:text-slate-400 font-bold">লোড হচ্ছে...</p>
       </div>
     </div>
@@ -248,7 +248,7 @@ export default function DashboardPage() {
         className={`${size} rounded-full object-cover ring-2 ring-white dark:ring-slate-900`}
       />
     ) : (
-      <div className={`${size} rounded-full bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center ${textSize} font-bold text-white ring-2 ring-white dark:ring-slate-900`}>
+      <div className={`${size} rounded-full bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center ${textSize} font-bold text-white ring-2 ring-white dark:ring-slate-900`}>
         {userData?.name ? userData.name.charAt(0).toUpperCase() : "U"}
       </div>
     );
@@ -288,7 +288,7 @@ export default function DashboardPage() {
           {userData?.isAdmin && (
             <button
               onClick={() => router.push("/admin")}
-              className="text-xs sm:text-sm font-medium text-white bg-indigo-600 px-3 py-1.5 rounded-lg hover:bg-indigo-700 transition"
+              className="text-xs sm:text-sm font-medium text-white bg-emerald-600 px-3 py-1.5 rounded-lg hover:bg-emerald-700 transition"
             >
               🛡️ Admin
             </button>
@@ -312,27 +312,29 @@ export default function DashboardPage() {
 
       <div className="max-w-6xl mx-auto px-3 sm:px-4 mt-4 sm:mt-8 space-y-5 sm:space-y-8">
 
-        {/* ✅ প্রোফাইল হিরো কার্ড (কালার আপগ্রেড করা হয়েছে) */}
-        <div className="relative overflow-hidden rounded-2xl sm:rounded-3xl bg-gradient-to-br from-indigo-600 via-violet-500 to-purple-600 p-4 sm:p-8 text-white shadow-lg shadow-indigo-500/20">
-          <div className="absolute -right-10 -top-10 w-48 h-48 rounded-full bg-white/10"></div>
-          <div className="absolute -right-4 bottom-0 w-28 h-28 rounded-full bg-white/10"></div>
+        {/* ✅ প্রোফাইল হিরো কার্ড — ডার্ক থিমের সাথে মিলিয়ে সফট গ্লো ডিজাইন */}
+        <div className="relative overflow-hidden rounded-2xl sm:rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-4 sm:p-8 shadow-sm">
+          {/* সফট গ্লো accent — উজ্জ্বল সলিড ব্লকের বদলে subtle glow */}
+          <div className="absolute -right-16 -top-16 w-64 h-64 rounded-full bg-emerald-400/20 dark:bg-emerald-500/10 blur-3xl"></div>
+          <div className="absolute -left-10 -bottom-10 w-40 h-40 rounded-full bg-teal-400/10 dark:bg-teal-500/10 blur-3xl"></div>
+
           <div className="relative flex flex-col sm:flex-row sm:items-center justify-between gap-6">
             <div className="flex items-center gap-4">
               <AvatarOrInitial />
               <div>
                 <div className="flex items-center gap-2 flex-wrap">
-                  <h2 className="text-xl font-extrabold tracking-tight">
+                  <h2 className="text-xl font-extrabold tracking-tight text-slate-800 dark:text-white">
                     স্বাগতম, {userData?.name || "শিক্ষার্থী"}! 👋
                   </h2>
                   {badge && (
-                    <span className="text-xs font-bold px-2 py-1 rounded-full bg-white/90 text-indigo-700">
+                    <span className="text-xs font-bold px-2 py-1 rounded-full bg-emerald-50 dark:bg-emerald-400/10 text-emerald-700 dark:text-emerald-300 border border-emerald-100 dark:border-emerald-900">
                       {badge.label}
                     </span>
                   )}
                 </div>
-                <p className="text-sm text-indigo-100 mt-1">{user?.email}</p>
+                <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">{user?.email}</p>
                 {myRank && (
-                  <p className="text-sm font-bold text-white mt-1">
+                  <p className="text-sm font-bold text-emerald-600 dark:text-emerald-400 mt-1">
                     🏅 লিডারবোর্ডে আপনার অবস্থান: #{myRank}
                   </p>
                 )}
@@ -341,21 +343,21 @@ export default function DashboardPage() {
 
             {/* স্ট্যাট কার্ড */}
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3 w-full sm:min-w-[360px]">
-              <div className="bg-white/15 rounded-xl sm:rounded-2xl p-2.5 sm:p-3 text-center backdrop-blur-sm">
-                <p className="text-xl sm:text-2xl font-extrabold">{totalCorrect}</p>
-                <p className="text-[11px] font-medium text-indigo-100 mt-0.5">মোট স্কোর</p>
+              <div className="bg-slate-50 dark:bg-slate-800/60 border border-slate-100 dark:border-slate-800 rounded-xl sm:rounded-2xl p-2.5 sm:p-3 text-center">
+                <p className="text-xl sm:text-2xl font-extrabold text-slate-800 dark:text-white">{totalCorrect}</p>
+                <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400 mt-0.5">মোট স্কোর</p>
               </div>
-              <div className="bg-white/15 rounded-xl sm:rounded-2xl p-2.5 sm:p-3 text-center backdrop-blur-sm">
-                <p className="text-xl sm:text-2xl font-extrabold">{totalAttempts}</p>
-                <p className="text-[11px] font-medium text-indigo-100 mt-0.5">পরীক্ষা দিয়েছেন</p>
+              <div className="bg-slate-50 dark:bg-slate-800/60 border border-slate-100 dark:border-slate-800 rounded-xl sm:rounded-2xl p-2.5 sm:p-3 text-center">
+                <p className="text-xl sm:text-2xl font-extrabold text-slate-800 dark:text-white">{totalAttempts}</p>
+                <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400 mt-0.5">পরীক্ষা দিয়েছেন</p>
               </div>
-              <div className="bg-white/15 rounded-xl sm:rounded-2xl p-2.5 sm:p-3 text-center backdrop-blur-sm">
-                <p className="text-xl sm:text-2xl font-extrabold">{avgScore}%</p>
-                <p className="text-[11px] font-medium text-indigo-100 mt-0.5">গড় সঠিক হার</p>
+              <div className="bg-emerald-50 dark:bg-emerald-400/10 border border-emerald-100 dark:border-emerald-900 rounded-xl sm:rounded-2xl p-2.5 sm:p-3 text-center">
+                <p className="text-xl sm:text-2xl font-extrabold text-emerald-600 dark:text-emerald-400">{avgScore}%</p>
+                <p className="text-[11px] font-medium text-emerald-600/80 dark:text-emerald-400/80 mt-0.5">গড় সঠিক হার</p>
               </div>
-              <div className="bg-white/15 rounded-xl sm:rounded-2xl p-2.5 sm:p-3 text-center backdrop-blur-sm">
-                <p className="text-xl sm:text-2xl font-extrabold">#{myRank || "—"}</p>
-                <p className="text-[11px] font-medium text-indigo-100 mt-0.5">র‍্যাঙ্ক</p>
+              <div className="bg-slate-50 dark:bg-slate-800/60 border border-slate-100 dark:border-slate-800 rounded-xl sm:rounded-2xl p-2.5 sm:p-3 text-center">
+                <p className="text-xl sm:text-2xl font-extrabold text-slate-800 dark:text-white">#{myRank || "—"}</p>
+                <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400 mt-0.5">র‍্যাঙ্ক</p>
               </div>
             </div>
           </div>
@@ -386,12 +388,12 @@ export default function DashboardPage() {
                 return (
                   <div
                     key={subject.id}
-                    className="group relative overflow-hidden bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4 sm:p-5 flex flex-col justify-between hover:shadow-lg hover:shadow-slate-200/50 dark:hover:shadow-none hover:border-indigo-200 dark:hover:border-indigo-800 transition-all duration-200 active:scale-[0.99]"
+                    className="group relative overflow-hidden bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4 sm:p-5 flex flex-col justify-between hover:shadow-lg hover:shadow-slate-200/50 dark:hover:shadow-none hover:border-emerald-200 dark:hover:border-emerald-800 transition-all duration-200 active:scale-[0.99]"
                   >
                     {/* ✅ স্ট্যাটাস অনুযায়ী বাম পাশে রঙের একটা accent bar */}
                     <div
                       className={`absolute left-0 top-0 bottom-0 w-1 ${
-                        isLive ? "bg-rose-400" : isDone ? "bg-green-400" : "bg-indigo-400"
+                        isLive ? "bg-rose-400" : isDone ? "bg-green-400" : "bg-emerald-300"
                       }`}
                     />
 
@@ -422,7 +424,7 @@ export default function DashboardPage() {
                         ) : (
                           <>
                             <p className="text-[11px] text-slate-500 dark:text-slate-400 mb-1">শুরু হতে বাকি</p>
-                            <p className="text-lg font-extrabold text-indigo-600 dark:text-indigo-400 font-mono">
+                            <p className="text-lg font-extrabold text-emerald-600 dark:text-emerald-400 font-mono">
                               {formatCountdown(diff)}
                             </p>
                           </>
@@ -472,7 +474,7 @@ export default function DashboardPage() {
                             ? "bg-slate-300 dark:bg-slate-700 cursor-not-allowed"
                             : isDone
                             ? "bg-amber-600 hover:bg-amber-700 active:scale-95"
-                            : "bg-indigo-600 hover:bg-indigo-700 active:scale-95"
+                            : "bg-emerald-600 hover:bg-emerald-700 active:scale-95"
                         }`}
                       >
                         {!isLive ? "অপেক্ষা করুন" : isDone ? "আবার দিন (প্র্যাকটিস) ↻" : "পরীক্ষা দিন →"}
@@ -500,7 +502,7 @@ export default function DashboardPage() {
                   key={leader.id}
                   className={`flex items-center gap-3 p-3 rounded-xl border transition ${
                     isMe
-                      ? "bg-indigo-50/60 dark:bg-indigo-950/30 border-indigo-100 dark:border-indigo-900"
+                      ? "bg-emerald-50/60 dark:bg-emerald-950/30 border-emerald-100 dark:border-emerald-900"
                       : "bg-slate-50 dark:bg-slate-800/60 border-slate-100 dark:border-slate-800"
                   }`}
                 >
@@ -511,19 +513,19 @@ export default function DashboardPage() {
                     <img src={leader.photoURL} alt="" className="w-8 h-8 rounded-full object-cover" />
                   ) : (
                     <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold ${
-                      isMe ? "bg-indigo-200 dark:bg-indigo-800 text-indigo-800 dark:text-indigo-100" : "bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300"
+                      isMe ? "bg-emerald-200 dark:bg-emerald-800 text-emerald-800 dark:text-emerald-100" : "bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300"
                     }`}>
                       {leader.name?.charAt(0).toUpperCase() || "?"}
                     </div>
                   )}
                   <div className="flex-1">
-                    <p className={`text-sm font-bold ${isMe ? "text-indigo-700 dark:text-indigo-300" : "text-slate-700 dark:text-slate-200"}`}>
+                    <p className={`text-sm font-bold ${isMe ? "text-emerald-700 dark:text-emerald-300" : "text-slate-700 dark:text-slate-200"}`}>
                       {leader.name || "অজানা"}
                       {isMe && <span className="ml-1 text-xs">(আমি)</span>}
                     </p>
                   </div>
                   <span className={`text-xs font-bold px-2 py-1 rounded-lg ${
-                    isMe ? "bg-indigo-50 dark:bg-indigo-900/40 text-indigo-600 dark:text-indigo-300" : "bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border border-slate-100 dark:border-slate-800"
+                    isMe ? "bg-emerald-50 dark:bg-emerald-900/40 text-emerald-600 dark:text-emerald-300" : "bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border border-slate-100 dark:border-slate-800"
                   }`}>
                     {leader.total_score || 0} pts
                   </span>
@@ -557,14 +559,14 @@ export default function DashboardPage() {
                       className="w-24 h-24 rounded-full object-cover"
                     />
                   ) : (
-                    <div className="w-24 h-24 rounded-full bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center text-2xl font-bold text-white">
+                    <div className="w-24 h-24 rounded-full bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center text-2xl font-bold text-white">
                       {newName ? newName.charAt(0).toUpperCase() : "U"}
                     </div>
                   )}
                   <button
                     type="button"
                     onClick={() => fileInputRef.current?.click()}
-                    className="absolute bottom-0 right-0 w-8 h-8 rounded-full bg-indigo-600 hover:bg-indigo-700 text-white flex items-center justify-center text-sm"
+                    className="absolute bottom-0 right-0 w-8 h-8 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white flex items-center justify-center text-sm"
                     aria-label="ছবি পরিবর্তন করুন"
                   >
                     📷
@@ -587,7 +589,7 @@ export default function DashboardPage() {
                   required
                   value={newName}
                   onChange={(e) => setNewName(e.target.value)}
-                  className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 p-3 text-sm focus:outline-none focus:border-indigo-400 dark:focus:border-indigo-500"
+                  className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 p-3 text-sm focus:outline-none focus:border-emerald-400 dark:focus:border-emerald-500"
                   placeholder="আপনার নাম লিখুন"
                 />
               </div>
@@ -602,7 +604,7 @@ export default function DashboardPage() {
                 <button
                   type="submit"
                   disabled={isUpdating}
-                  className="w-1/2 rounded-xl bg-indigo-600 hover:bg-indigo-700 py-3 text-sm font-bold text-white transition disabled:opacity-60"
+                  className="w-1/2 rounded-xl bg-emerald-600 hover:bg-emerald-700 py-3 text-sm font-bold text-white transition disabled:opacity-60"
                 >
                   {isUpdating ? "সেভ হচ্ছে..." : "সেভ করুন ✓"}
                 </button>
@@ -611,7 +613,6 @@ export default function DashboardPage() {
           </div>
         </div>
       )}
-
       {/* ✅ প্রস্তুতি Modal — countdown চলাকালীন প্রশ্ন+উত্তর দেখার জন্য */}
       {preparationSubject && (() => {
         const examTime = preparationSubject.examDate?.toDate
