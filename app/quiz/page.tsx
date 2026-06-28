@@ -315,9 +315,25 @@ function QuizPageContent() {
 
   const getOptionStyle = (key: string) => {
     const selected = answers[currentIdx];
-    return selected === key
-      ? "border-emerald-500 bg-emerald-50 dark:bg-emerald-400/10 text-emerald-700 dark:text-emerald-300 font-bold"
-      : "border-slate-200 dark:border-slate-700 hover:border-emerald-300 dark:hover:border-emerald-700 hover:bg-slate-50 dark:hover:bg-slate-800/60 text-slate-700 dark:text-slate-200";
+    const correctKey = currentQ?.correct;
+
+    // ✅ এখনো উত্তর সিলেক্ট করা না হলে normal/hover স্টাইল
+    if (selected == null) {
+      return "border-slate-200 dark:border-slate-700 hover:border-emerald-300 dark:hover:border-emerald-700 hover:bg-slate-50 dark:hover:bg-slate-800/60 text-slate-700 dark:text-slate-200";
+    }
+
+    // ✅ একবার উত্তর সিলেক্ট হয়ে গেলে — সঠিক উত্তর সবসময় সবুজ দেখাবে
+    if (key === correctKey) {
+      return "border-emerald-500 bg-emerald-50 dark:bg-emerald-400/10 text-emerald-700 dark:text-emerald-300 font-bold";
+    }
+
+    // ✅ ইউজার যদি ভুল অপশন সিলেক্ট করে থাকে, সেটা লাল দেখাবে
+    if (key === selected) {
+      return "border-rose-500 bg-rose-50 dark:bg-rose-400/10 text-rose-700 dark:text-rose-300 font-bold";
+    }
+
+    // ✅ বাকি অপশনগুলো (সঠিকও না, সিলেক্টও করা হয়নি) ফিকে দেখাবে
+    return "border-slate-200 dark:border-slate-700 text-slate-400 dark:text-slate-500 opacity-60";
   };
 
   if (loading) return (
@@ -509,6 +525,16 @@ function QuizPageContent() {
   const isLast = currentIdx === questions.length - 1;
   const currentAnswered = answers[currentIdx] != null;
 
+  // ✅ লাইভ সঠিক/ভুল কাউন্ট — যতগুলো প্রশ্নের উত্তর দেওয়া হয়েছে তার মধ্যে থেকে হিসাব
+  const liveCorrectCount = questions.reduce((acc, q, idx) => {
+    const sel = answers[idx];
+    return sel != null && sel === q.correct ? acc + 1 : acc;
+  }, 0);
+  const liveWrongCount = questions.reduce((acc, q, idx) => {
+    const sel = answers[idx];
+    return sel != null && sel !== q.correct ? acc + 1 : acc;
+  }, 0);
+
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950 p-3 sm:p-6 flex items-center justify-center transition-colors duration-300">
       <div className="max-w-xl w-full bg-white dark:bg-slate-900 p-4 sm:p-8 rounded-2xl sm:rounded-3xl shadow-lg shadow-slate-200/50 dark:shadow-none border border-slate-200 dark:border-slate-800">
@@ -526,6 +552,18 @@ function QuizPageContent() {
                 {warningMsg}
               </div>
             )}
+
+            {/* ✅ লাইভ সঠিক/ভুল কাউন্টার */}
+            <div className="flex gap-2 mb-3">
+              <div className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl bg-emerald-50 dark:bg-emerald-400/10 text-emerald-700 dark:text-emerald-300 font-bold text-sm">
+                <span>✅</span>
+                <span>সঠিক: {liveCorrectCount}</span>
+              </div>
+              <div className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl bg-rose-50 dark:bg-rose-400/10 text-rose-700 dark:text-rose-300 font-bold text-sm">
+                <span>❌</span>
+                <span>ভুল: {liveWrongCount}</span>
+              </div>
+            </div>
 
             {/* ✅ Timer + প্রোগ্রেস */}
             <div className="mb-4 flex items-center justify-between gap-3">

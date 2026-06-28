@@ -28,6 +28,7 @@ type UserData = {
   id: string; name: string; email: string;
   total_score: number; photoURL?: string;
   isAdmin?: boolean; retakeAccess?: boolean;
+  hiddenFromLeaderboard?: boolean; // ✅ লিডারবোর্ড থেকে লুকানো
 };
 
 type Attempt = {
@@ -445,8 +446,24 @@ export default function AdminPage() {
   };
 
   const deleteSubject = async (id: string) => {
+    // ✅ আগে subject এর examId বের করো
+    const subSnap = await getDoc(doc(db, "subjects", id));
+    const examId = subSnap.data()?.examId;
+
+    // ✅ সেই examId এর সব question খুঁজে batch delete করো
+    if (examId) {
+      const qSnap = await getDocs(collection(db, "questions"));
+      const relatedQuestions = qSnap.docs.filter(d => d.data().examId === examId);
+      if (relatedQuestions.length > 0) {
+        const batch = writeBatch(db);
+        relatedQuestions.forEach(d => batch.delete(doc(db, "questions", d.id)));
+        await batch.commit();
+      }
+    }
+
+    // ✅ তারপর subject নিজে delete করো
     await deleteDoc(doc(db, "subjects", id));
-    showToast("বিষয় মুছে গেছে", "error");
+    showToast(`বিষয় এবং সংশ্লিষ্ট সব প্রশ্ন মুছে গেছে 🗑️`, "error");
     fetchTab("subjects");
   };
 
@@ -466,6 +483,13 @@ export default function AdminPage() {
     await updateDoc(doc(db, "users", u.id), { total_score: 0 });
     showToast(`${u.name} এর স্কোর রিসেট হয়েছে`, "error");
     fetchTab("users");
+  };
+
+  const toggleLeaderboard = async (u: UserData) => {
+    const newVal = !u.hiddenFromLeaderboard;
+    await updateDoc(doc(db, "users", u.id), { hiddenFromLeaderboard: newVal });
+    setUsers(prev => prev.map(x => x.id === u.id ? { ...x, hiddenFromLeaderboard: newVal } : x));
+    showToast(newVal ? `${u.name} লিডারবোর্ড থেকে সরানো হয়েছে 🚫` : `${u.name} লিডারবোর্ডে ফেরত যোগ করা হয়েছে ✅`);
   };
 
   const deleteAttempt = async (attemptId: string, uid: string, score: number) => {
@@ -743,7 +767,7 @@ export default function AdminPage() {
                         </div>
                         <div className="flex flex-col gap-1.5 shrink-0">
                           <button onClick={() => setSModal({ open: true, data: s })} className="text-[11px] bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 px-2.5 py-1.5 rounded-lg font-bold hover:bg-indigo-50 dark:hover:bg-indigo-900/40 hover:text-indigo-600 transition">✏️ এডিট</button>
-                          <button onClick={() => setConfirmModal({ open: true, msg: `"${s.name}" বিষয়টি সম্পূর্ণ মুছে ফেলবেন?`, onOk: () => deleteSubject(s.id) })} className="text-[11px] bg-slate-100 dark:bg-slate-800 text-red-500 px-2.5 py-1.5 rounded-lg font-bold hover:bg-red-50 dark:hover:bg-red-900/30 transition">🗑️ মুছুন</button>
+                          <button onClick={() => setConfirmModal({ open: true, msg: `"${s.name}" বিষয়টি এবং এর অন্তর্গত সমস্ত প্রশ্ন চিরতরে মুছে ফেলবেন?`, onOk: () => deleteSubject(s.id) })} className="text-[11px] bg-slate-100 dark:bg-slate-800 text-red-500 px-2.5 py-1.5 rounded-lg font-bold hover:bg-red-50 dark:hover:bg-red-900/30 transition">🗑️ মুছুন</button>
                         </div>
                       </div>
                     </div>
@@ -786,6 +810,22 @@ export default function AdminPage() {
                       </button>
                       <button onClick={() => setConfirmModal({ open: true, msg: u.retakeAccess ? `${u.name} এর Retake অ্যাক্সেস বন্ধ করবেন?` : `${u.name} কে আবার পরীক্ষা দেওয়ার অ্যাক্সেস দিবেন?`, onOk: () => toggleRetake(u) })} className={`text-[11px] px-2.5 py-1.5 rounded-lg font-bold transition ${u.retakeAccess ? "bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300" : "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200"}`}>
                         {u.retakeAccess ? "🔄 Retake বন্ধ" : "🔄 Retake দিন"}
+                      </button>
+                      <button
+                        onClick={() => setConfirmModal({
+                          open: true,
+                          msg: u.hiddenFromLeaderboard
+                            ? `${u.name} কে আবার লিডারবোর্ডে দেখাতে চান?`
+                            : `${u.name} কে লিডারবোর্ড থেকে লুকাতে চান? তার নাম আর লিডারবোর্ডে দেখা যাবে না।`,
+                          onOk: () => toggleLeaderboard(u)
+                        })}
+                        className={`text-[11px] px-2.5 py-1.5 rounded-lg font-bold transition ${
+                          u.hiddenFromLeaderboard
+                            ? "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-200"
+                            : "bg-orange-50 dark:bg-orange-900/20 text-orange-600 dark:text-orange-400 hover:bg-orange-100"
+                        }`}
+                      >
+                        {u.hiddenFromLeaderboard ? "🏆 Leaderboard-এ দেখান" : "🚫 Leaderboard থেকে সরান"}
                       </button>
                       <button onClick={() => setConfirmModal({ open: true, msg: `${u.name} এর মোট স্কোর ০ (শূন্য) করতে চান?`, onOk: () => resetScore(u) })} className="text-[11px] bg-slate-100 dark:bg-slate-800 text-red-500 px-2.5 py-1.5 rounded-lg font-bold hover:bg-red-50 dark:hover:bg-red-900/20 transition ml-auto">
                         Reset Score

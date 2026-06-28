@@ -100,11 +100,13 @@ export default function DashboardPage() {
       }
 
       // লিডারবোর্ড + নিজের rank
-      const lbQ = query(collection(db, "users"), orderBy("total_score", "desc"), limit(10));
+      // hiddenFromLeaderboard: true হলে সেই ইউজার লিডারবোর্ডে দেখাবে না
+      const lbQ = query(collection(db, "users"), orderBy("total_score", "desc"), limit(50));
       const lbSnap = await getDocs(lbQ);
-      const board = lbSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      const allUsers = lbSnap.docs.map(d => ({ id: d.id, ...d.data() as any }));
+      const board = allUsers.filter((u: any) => !u.hiddenFromLeaderboard).slice(0, 20);
       setLeaderboard(board);
-      const rankIdx = board.findIndex(b => b.id === currentUser.uid);
+      const rankIdx = board.findIndex((b: any) => b.id === currentUser.uid);
       setMyRank(rankIdx >= 0 ? rankIdx + 1 : null);
 
       // ✅ সকল Subject/পরীক্ষা — তারিখ অনুযায়ী সাজানো (নতুন admin-added subject গুলোও আসবে)
