@@ -8,6 +8,14 @@ import { db, auth } from "@/lib/firebase";
 import { useRouter, useSearchParams } from "next/navigation";
 import { onAuthStateChanged } from "firebase/auth";
 
+// ✅ classLevel Firestore-এ রোমান সংখ্যায় (I, V, VI...) থাকে — dashboard/admin-এর মতোই
+// এখানেও সাধারণ সংখ্যায় (Class 5, Class 6...) দেখানোর জন্য একই ম্যাপিং ব্যবহার হচ্ছে
+const ROMAN_TO_NUMBER: Record<string, string> = {
+  I: "1", II: "2", III: "3", IV: "4", V: "5", VI: "6",
+  VII: "7", VIII: "8", IX: "9", X: "10", XI: "11", XII: "12",
+};
+const getClassDisplayLabel = (cls: string): string => ROMAN_TO_NUMBER[cls] || cls;
+
 // ✅ useSearchParams() Next.js-এ Suspense boundary ছাড়া static prerender এর
 // সময় বিল্ড এরর দেয় ("should be wrapped in a suspense boundary"), তাই
 // আসল কন্টেন্ট আলাদা কম্পোনেন্টে রেখে নিচে Suspense দিয়ে wrap করা হয়েছে।
@@ -38,6 +46,10 @@ function QuizPageContent() {
   const [answers, setAnswers] = useState<Record<number, string | null>>({});
 
   const [loading, setLoading] = useState(true);
+  // ✅ এই exam-টা যে ক্লাসের জন্য, সেই ক্লাসের student না হলে এই flag true হবে এবং exam শুরুই করতে দেওয়া হবে না
+  const [classMismatch, setClassMismatch] = useState(false);
+  const [requiredClassLevel, setRequiredClassLevel] = useState<string | null>(null);
+  const [myStudentClass, setMyStudentClass] = useState<string | null>(null);
   const [isFirstAttempt, setIsFirstAttempt] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showFinalResult, setShowFinalResult] = useState(false);
@@ -79,50 +91,95 @@ function QuizPageContent() {
         let resolvedDuration = 30;
         let resolvedMaxWarnings = 3;
         let resolvedSubjectName = "";
+        let resolvedClassLevel: string | null = null;
 
+        // [OPT-1] subject info আর user data একসাথে parallel এ আনো
+        // আগে: subject query → তারপর user doc = 2x latency
+        // এখন: দুটো একসাথে = 1x latency
         if (subjectParam) {
-          // ✅ subject-ভিত্তিক exam — subjects collection থেকে duration/name নেওয়া হচ্ছে
+          const [subjSnap, userDocSnap] = await Promise.all([
+            getDocs(query(collection(db, "subjects"), where("examId", "==", subjectParam))),
+            getDoc(doc(db, "users", currentUser.uid)),
+          ]);
+
+          // Subject data process
           resolvedExamId = subjectParam;
-          const subjQ = query(collection(db, "subjects"), where("examId", "==", subjectParam));
-          const subjSnap = await getDocs(subjQ);
           if (!subjSnap.empty) {
             const subjData = subjSnap.docs[0].data() as any;
             resolvedDuration = subjData.durationMinutes || 30;
             resolvedSubjectName = subjData.name || "";
+            resolvedClassLevel = (subjData.class || subjData.classLevel || "").toString().trim() || null;
             if (typeof subjData.maxWarnings === "number") resolvedMaxWarnings = subjData.maxWarnings;
           }
+
+          // User data process
+          const myUserData = userDocSnap.exists() ? userDocSnap.data() as any : null;
+          const isAdminUser = !!myUserData?.isAdmin;
+          const studentClass: string | null = myUserData?.studentClass || null;
+          setMyStudentClass(studentClass);
+
+          setExamId(resolvedExamId);
+          setDurationMinutes(resolvedDuration);
+          setMaxWarnings(resolvedMaxWarnings);
+          setSubjectName(resolvedSubjectName);
+
+          // Class-mismatch চেক — ভুল ক্লাসের exam URL দিয়ে ঢুকতে চাইলে আটকাবে
+          if (
+            resolvedClassLevel &&
+            resolvedClassLevel !== "অন্যান্য" &&
+            !isAdminUser &&
+            studentClass !== resolvedClassLevel
+          ) {
+            setRequiredClassLevel(resolvedClassLevel);
+            setClassMismatch(true);
+            setLoading(false);
+            return;
+          }
+
+          // [OPT-2] attempt check আর questions একসাথে parallel এ আনো
+          // আগে: attempt check → তারপর questions = 2x latency
+          // এখন: দুটো একসাথে = 1x latency
+          const [attemptSnap, qSnap] = await Promise.all([
+            getDoc(doc(db, "user_attempts", `${currentUser.uid}_${resolvedExamId}`)),
+            getDocs(query(collection(db, "questions"), where("examId", "==", resolvedExamId))),
+          ]);
+
+          setIsFirstAttempt(!attemptSnap.exists());
+          setQuestions(qSnap.docs.map(d => ({ id: d.id, ...d.data() })));
+
         } else {
-          // ✅ পুরোনো single-exam সেটআপের সাথে compatible
-          const configSnap = await getDoc(doc(db, "settings", "exam_config"));
+          // subject param নেই — legacy বা admin fallback
+          const [configSnap, userDocSnap] = await Promise.all([
+            getDoc(doc(db, "settings", "exam_config")),
+            getDoc(doc(db, "users", currentUser.uid)),
+          ]);
+
           const configData = configSnap.data();
           resolvedExamId = configData?.current_exam_id || "default_exam";
           resolvedDuration = configData?.durationMinutes || 30;
           if (typeof configData?.maxWarnings === "number") resolvedMaxWarnings = configData.maxWarnings;
-        }
 
-        setExamId(resolvedExamId);
-        setDurationMinutes(resolvedDuration);
-        setMaxWarnings(resolvedMaxWarnings);
-        setSubjectName(resolvedSubjectName);
+          setExamId(resolvedExamId);
+          setDurationMinutes(resolvedDuration);
+          setMaxWarnings(resolvedMaxWarnings);
 
-        // ✅ আগে এই exam দেওয়া আছে কিনা চেক করা হচ্ছে — কিন্তু এখন এর জন্য
-        // ইউজারকে আটকানো হবে না, শুধু মনে রাখা হচ্ছে এটা প্রথমবার কিনা।
-        // প্রথমবারের স্কোরই ডাটাবেসে সেভ থাকবে, পরের বারগুলো শুধু practice হিসেবে গণ্য হবে।
-        const attemptSnap = await getDoc(doc(db, "user_attempts", `${currentUser.uid}_${resolvedExamId}`));
-        setIsFirstAttempt(!attemptSnap.exists());
+          const myUserData = userDocSnap.exists() ? userDocSnap.data() as any : null;
+          const isAdminUser = !!myUserData?.isAdmin;
 
-        // ✅ প্রশ্ন লোড — subject-ভিত্তিক হলে সেই subject এর প্রশ্ন, না পেলে সব প্রশ্ন (legacy fallback)
-        let fetchedQuestions: any[] = [];
-        if (subjectParam) {
-          const qQ = query(collection(db, "questions"), where("examId", "==", resolvedExamId));
-          const qSnap = await getDocs(qQ);
-          fetchedQuestions = qSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+          if (!isAdminUser) {
+            // Student কে dashboard এ পাঠিয়ে দাও
+            router.push("/dashboard");
+            return;
+          }
+
+          // Admin legacy fallback — সব প্রশ্ন আর attempt check একসাথে
+          const [attemptSnap, qSnapAll] = await Promise.all([
+            getDoc(doc(db, "user_attempts", `${currentUser.uid}_${resolvedExamId}`)),
+            getDocs(collection(db, "questions")),
+          ]);
+          setIsFirstAttempt(!attemptSnap.exists());
+          setQuestions(qSnapAll.docs.map(d => ({ id: d.id, ...d.data() })));
         }
-        if (fetchedQuestions.length === 0) {
-          const qSnapAll = await getDocs(collection(db, "questions"));
-          fetchedQuestions = qSnapAll.docs.map(d => ({ id: d.id, ...d.data() }));
-        }
-        setQuestions(fetchedQuestions);
       } catch (error) {
         console.error("Error fetching data:", error);
       } finally {
@@ -346,6 +403,38 @@ function QuizPageContent() {
       </div>
     </div>
   );
+
+  // ✅ ভুল ক্লাসের পরীক্ষা — dashboard থেকে নয়, সরাসরি URL দিয়ে অন্য ক্লাসের exam-এ ঢোকার চেষ্টা হলে এই স্ক্রিন দেখাবে
+  if (classMismatch) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-slate-50 dark:bg-slate-950 p-4 transition-colors duration-300">
+        <div className="max-w-md w-full bg-white dark:bg-slate-900 rounded-2xl sm:rounded-3xl shadow-lg shadow-slate-200/50 dark:shadow-none border border-slate-200 dark:border-slate-800 p-6 sm:p-8 text-center">
+          <p className="text-4xl mb-3">🚫</p>
+          <h2 className="text-lg sm:text-xl font-extrabold text-slate-800 dark:text-slate-100 mb-2">
+            এই পরীক্ষাটি আপনার জন্য নয়
+          </h2>
+          <p className="text-sm text-slate-500 dark:text-slate-400 mb-1">
+            {subjectName || "এই পরীক্ষা"}টি{" "}
+            <span className="font-bold text-slate-700 dark:text-slate-200">
+              ক্লাস {requiredClassLevel ? getClassDisplayLabel(requiredClassLevel) : "—"}
+            </span>{" "}
+            এর জন্য নির্ধারিত।
+          </p>
+          <p className="text-sm text-slate-500 dark:text-slate-400 mb-6">
+            {myStudentClass
+              ? <>আপনার ক্লাস <span className="font-bold text-slate-700 dark:text-slate-200">ক্লাস {getClassDisplayLabel(myStudentClass)}</span> — তাই এই পরীক্ষায় অংশ নিতে পারবেন না।</>
+              : "আপনার প্রোফাইলে এখনো কোনো ক্লাস নির্ধারণ করা হয়নি — ড্যাশবোর্ডে গিয়ে আগে ক্লাস সিলেক্ট করুন।"}
+          </p>
+          <button
+            onClick={() => router.push("/dashboard")}
+            className="w-full bg-emerald-600 hover:bg-emerald-700 text-white py-3.5 rounded-xl font-bold transition active:scale-[0.99]"
+          >
+            ড্যাশবোর্ডে ফিরে যান 🏠
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   // ✅ ফাইনাল রেজাল্ট স্ক্রিন
   if (showFinalResult) {

@@ -4,7 +4,7 @@ import { auth, db } from "@/lib/firebase";
 import { onAuthStateChanged, signOut } from "firebase/auth";
 import {
   doc, getDoc, collection, query, orderBy, limit,
-  getDocs, updateDoc
+  getDocs, updateDoc, where
 } from "firebase/firestore";
 import { useRouter } from "next/navigation";
 
@@ -28,6 +28,19 @@ type Subject = {
 // ✅ ক্লাসগুলোকে সঠিক ক্রমে সাজানোর জন্য (Firestore থেকে আসা order নির্ভরযোগ্য না হতে পারে)
 const CLASS_ORDER = ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII"];
 
+// ✅ Firestore এ classLevel রোমান সংখ্যায় (I, II, V, VI...) থাকতে পারে —
+// কিন্তু UI তে "Class 5", "Class 6" এর মতো সাধারণ সংখ্যা দেখানোর জন্য এই ম্যাপিং ব্যবহার হবে
+const ROMAN_TO_NUMBER: Record<string, string> = {
+  I: "1", II: "2", III: "3", IV: "4", V: "5", VI: "6",
+  VII: "7", VIII: "8", IX: "9", X: "10", XI: "11", XII: "12",
+};
+
+// ✅ ক্লাস লেবেল দেখানোর জন্য — Firestore এ রোমান বা সংখ্যা যেভাবেই থাকুক না কেন,
+// সবসময় সাধারণ সংখ্যা (Class 5, Class 6...) আকারে দেখাবে
+const getClassDisplayLabel = (cls: string): string => {
+  return ROMAN_TO_NUMBER[cls] || cls;
+};
+
 export default function DashboardPage() {
   const [user, setUser] = useState<any>(null);
   const [userData, setUserData] = useState<any>(null);
@@ -39,6 +52,7 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [newName, setNewName] = useState("");
+  const [newStudentClass, setNewStudentClass] = useState("");
   const [photoPreview, setPhotoPreview] = useState<string | null>(null);
   const [isUpdating, setIsUpdating] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -95,28 +109,41 @@ export default function DashboardPage() {
   const fetchData = async (currentUser: any) => {
     if (!currentUser?.uid) return;
     try {
-      // ইউজার ডেটা
+      // [OPT-1] আগে শুধু এই user এর data আনো
       const userDoc = await getDoc(doc(db, "users", currentUser.uid));
+      let currentUserData: any = null;
       if (userDoc.exists()) {
         const data = userDoc.data();
+        currentUserData = data;
         setUserData(data);
         setNewName(data.name || "");
+        setNewStudentClass(data.studentClass || "");
         setPhotoPreview(data.photoURL || null);
       }
 
-      // লিডারবোর্ড + নিজের rank
-      // hiddenFromLeaderboard: true হলে সেই ইউজার লিডারবোর্ডে দেখাবে না
-      const lbQ = query(collection(db, "users"), orderBy("total_score", "desc"), limit(50));
-      const lbSnap = await getDocs(lbQ);
+      // [OPT-2] বাকি সব query একসাথে parallel এ চালাও
+      // আগে: 4টা query একটার পর একটা = 4x latency
+      // এখন: সব একসাথে = শুধু সবচেয়ে slow টার সমান latency
+      const [lbSnap, subjSnap, myAttemptsSnap, noticeSnap] = await Promise.all([
+        // লিডারবোর্ড — limit 25 যথেষ্ট (20 দেখাই, 5 buffer)
+        getDocs(query(collection(db, "users"), orderBy("total_score", "desc"), limit(25))),
+        // সব subject
+        getDocs(query(collection(db, "subjects"), orderBy("examDate", "asc"))),
+        // [OPT-3] সবচেয়ে বড় fix: আগে সব user এর 200টা attempt টেনে client-side filter করত
+        // এখন Firestore server-side এ শুধু এই user এর attempt আনছে — reads অনেক কমবে
+        getDocs(query(collection(db, "user_attempts"), where("uid", "==", currentUser.uid))),
+        // নোটিশ
+        getDoc(doc(db, "settings", "notice")),
+      ]);
+
+      // লিডারবোর্ড process
       const allUsers = lbSnap.docs.map(d => ({ id: d.id, ...d.data() as any }));
       const board = allUsers.filter((u: any) => !u.hiddenFromLeaderboard).slice(0, 20);
       setLeaderboard(board);
       const rankIdx = board.findIndex((b: any) => b.id === currentUser.uid);
       setMyRank(rankIdx >= 0 ? rankIdx + 1 : null);
 
-      // ✅ সকল Subject/পরীক্ষা — তারিখ অনুযায়ী সাজানো (নতুন admin-added subject গুলোও আসবে)
-      const subjQ = query(collection(db, "subjects"), orderBy("examDate", "asc"));
-      const subjSnap = await getDocs(subjQ);
+      // Subject process
       const subjList: Subject[] = subjSnap.docs.map(d => {
         const data = d.data() as any;
         return {
@@ -131,8 +158,10 @@ export default function DashboardPage() {
       });
       setSubjects(subjList);
 
-      // ✅ Firestore থেকে পাওয়া ক্লাসগুলো নির্দিষ্ট ক্রমে সাজিয়ে প্রথমটা ডিফল্ট হিসেবে সিলেক্ট করা
+      // Admin না হলে student শুধু নিজের ক্লাসের subject দেখবে
       setSelectedClass(prev => {
+        const isAdminUser = !!currentUserData?.isAdmin;
+        if (!isAdminUser) return currentUserData?.studentClass || null;
         if (prev && subjList.some(s => s.classLevel === prev)) return prev;
         const uniqueClasses = Array.from(new Set(subjList.map(s => s.classLevel)));
         uniqueClasses.sort((a, b) => {
@@ -146,22 +175,15 @@ export default function DashboardPage() {
         return uniqueClasses[0] || null;
       });
 
-      // ✅ ইউজারের attempt করা সব examId — কোন subject এ আগে পরীক্ষা দেওয়া হয়েছে তা বোঝার জন্য
-      const attemptsQ = query(collection(db, "user_attempts"), limit(200));
-      const attemptsSnap = await getDocs(attemptsQ);
-      const myAttempts = attemptsSnap.docs
-        .map(d => d.data() as any)
-        .filter((a) => a.uid === currentUser.uid);
-      setAttemptedExamIds(new Set(myAttempts.map((a) => a.examId)));
+      // [OPT-3 continued] myAttemptsSnap এ এখন শুধু এই user এর attempt — আর client filter দরকার নেই
+      const myAttempts = myAttemptsSnap.docs.map(d => d.data() as any);
+      setAttemptedExamIds(new Set(myAttempts.map((a: any) => a.examId)));
       setTotalAttempts(myAttempts.length);
-      // ✅ প্রতিটা exam-এ প্রশ্ন সংখ্যা ভিন্ন হতে পারে, তাই fixed 10 ধরে না নিয়ে
-      // প্রতিটা attempt-এ আসলে কত প্রশ্ন ছিল (a.total) তা যোগ করে নির্ভুল accuracy বের করা হচ্ছে
-      const questionsSum = myAttempts.reduce((sum, a) => sum + (a.total || 0), 0);
+      const questionsSum = myAttempts.reduce((sum: number, a: any) => sum + (a.total || 0), 0);
       setTotalQuestionsSum(questionsSum);
 
       // নোটিশ
-      const noticeSnap = await getDoc(doc(db, "settings", "notice"));
-      if (noticeSnap.exists()) setNotice(noticeSnap.data()?.text || null);
+      if (noticeSnap.exists()) setNotice((noticeSnap as any).data()?.text || null);
 
     } catch (error) {
       console.error("Data fetching error:", error);
@@ -180,6 +202,14 @@ export default function DashboardPage() {
     });
     return () => unsubscribe();
   }, [router]);
+
+  // ✅ Student (Admin না) এর ক্লাস এখনো সেট করা না থাকলে প্রোফাইল মডাল অটোমেটিক খুলে যাবে —
+  // যাতে সে নিজের ক্লাস সিলেক্ট না করা পর্যন্ত বুঝতে পারে এটা আগে করতে হবে
+  useEffect(() => {
+    if (!loading && userData && !userData.isAdmin && !userData.studentClass) {
+      setIsModalOpen(true);
+    }
+  }, [loading, userData]);
 
   // ✅ ছবি সিলেক্ট করলে Canvas দিয়ে compress করে base64 এ কনভার্ট করা
   // যেকোনো সাইজের ছবি আপলোড করা যাবে — অটো রিসাইজ ও কম্প্রেস হবে
@@ -237,9 +267,15 @@ export default function DashboardPage() {
   const handleUpdateProfile = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user) return;
+    // ✅ Admin না হলে নিজের ক্লাস সিলেক্ট করা বাধ্যতামূলক — এটার ভিত্তিতেই dashboard-এ শুধু তার ক্লাসের পরীক্ষা দেখাবে
+    if (!userData?.isAdmin && !newStudentClass) {
+      alert("দয়া করে আপনার ক্লাস নির্বাচন করুন!");
+      return;
+    }
     setIsUpdating(true);
     try {
       const payload: Record<string, any> = { name: newName };
+      if (newStudentClass) payload.studentClass = newStudentClass;
       if (photoPreview) payload.photoURL = photoPreview;
       await updateDoc(doc(db, "users", user.uid), payload);
       await fetchData(user);
@@ -263,8 +299,15 @@ export default function DashboardPage() {
   const avgScore = totalQuestionsSum > 0 ? Math.round((totalCorrect / totalQuestionsSum) * 100) : 0;
   const badge = getBadge(totalCorrect, totalQuestionsSum);
 
+  // ✅ Admin সব ক্লাসের subject দেখতে পাবে, কিন্তু student শুধু নিজের ক্লাসের subject-ই দেখবে/দিতে পারবে —
+  // এতে অন্য ক্লাসের পরীক্ষা dashboard-এ আসেই না, তাই ভুল ক্লাসের পরীক্ষা দেওয়ার সুযোগ থাকে না
+  const isAdminUser = !!userData?.isAdmin;
+  const effectiveSubjects = isAdminUser
+    ? subjects
+    : subjects.filter(s => s.classLevel === userData?.studentClass);
+
   // ✅ ক্লাস অনুযায়ী subject গুলোকে গ্রুপ করার জন্য — শুধু সিলেক্ট করা ক্লাসের subject গুলো দেখানো হবে
-  const sortedClasses = Array.from(new Set(subjects.map(s => s.classLevel))).sort((a, b) => {
+  const sortedClasses = Array.from(new Set(effectiveSubjects.map(s => s.classLevel))).sort((a, b) => {
     const ai = CLASS_ORDER.indexOf(a);
     const bi = CLASS_ORDER.indexOf(b);
     if (ai === -1 && bi === -1) return a.localeCompare(b);
@@ -272,7 +315,16 @@ export default function DashboardPage() {
     if (bi === -1) return -1;
     return ai - bi;
   });
-  const visibleSubjects = subjects.filter(s => s.classLevel === selectedClass);
+  const visibleSubjects = effectiveSubjects.filter(s => s.classLevel === selectedClass);
+
+  // ✅ সিলেক্ট করা ক্লাসের subject গুলোকে আবার subject name অনুযায়ী গ্রুপ করা হচ্ছে —
+  // একই নামের subject এ একাধিক পরীক্ষা (ভিন্ন তারিখে) থাকলে সেগুলো একই সেকশনে দেখাবে
+  const groupedBySubjectName = visibleSubjects.reduce((acc: Record<string, Subject[]>, subject) => {
+    if (!acc[subject.name]) acc[subject.name] = [];
+    acc[subject.name].push(subject);
+    return acc;
+  }, {});
+  const subjectNameGroups = Object.entries(groupedBySubjectName);
 
   const AvatarOrInitial = ({ size = "w-14 h-14", textSize = "text-xl" }: { size?: string; textSize?: string }) =>
     userData?.photoURL ? (
@@ -404,8 +456,8 @@ export default function DashboardPage() {
             <h3 className="font-extrabold text-slate-800 dark:text-slate-100 text-lg tracking-tight">পরীক্ষাসমূহ</h3>
           </div>
 
-          {/* ✅ ক্লাস ট্যাব — যে ক্লাসে ক্লিক করা হবে শুধু সেই ক্লাসের subject গুলোই নিচে দেখাবে */}
-          {sortedClasses.length > 0 && (
+          {/* ✅ ক্লাস ট্যাব — শুধু Admin-ই সব ক্লাসের মধ্যে সুইচ করতে পারবে; Student শুধু নিজের ক্লাস দেখবে */}
+          {isAdminUser && sortedClasses.length > 0 && (
             <div className="flex items-center gap-2 mb-4 overflow-x-auto pb-1 -mx-1 px-1 scrollbar-hide">
               {sortedClasses.map((cls) => (
                 <button
@@ -417,16 +469,37 @@ export default function DashboardPage() {
                       : "bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-800 hover:border-emerald-300 dark:hover:border-emerald-700"
                   }`}
                 >
-                  {cls === "অন্যান্য" ? cls : `ক্লাস ${cls}`}
+                  {cls === "অন্যান্য" ? cls : `ক্লাস ${getClassDisplayLabel(cls)}`}
                 </button>
               ))}
             </div>
           )}
+          {!isAdminUser && userData?.studentClass && (
+            <p className="text-xs font-bold text-emerald-600 dark:text-emerald-400 mb-4">
+              🎓 আপনার ক্লাস: ক্লাস {getClassDisplayLabel(userData.studentClass)} — শুধু এই ক্লাসের পরীক্ষাই এখানে দেখানো হচ্ছে
+            </p>
+          )}
 
-          {subjects.length === 0 ? (
+          {!isAdminUser && !userData?.studentClass ? (
+            <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-10 text-center">
+              <p className="text-3xl mb-2">🎓</p>
+              <p className="text-sm text-slate-500 dark:text-slate-400 mb-4">পরীক্ষা দেখতে হলে আগে আপনার ক্লাস নির্বাচন করুন।</p>
+              <button
+                onClick={() => setIsModalOpen(true)}
+                className="px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-bold transition active:scale-95"
+              >
+                ক্লাস নির্বাচন করুন
+              </button>
+            </div>
+          ) : subjects.length === 0 ? (
             <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-10 text-center">
               <p className="text-3xl mb-2">🗒️</p>
               <p className="text-sm text-slate-500 dark:text-slate-400">এখনো কোনো বিষয়/পরীক্ষা যুক্ত করা হয়নি।</p>
+            </div>
+          ) : effectiveSubjects.length === 0 ? (
+            <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-10 text-center">
+              <p className="text-3xl mb-2">🗒️</p>
+              <p className="text-sm text-slate-500 dark:text-slate-400">আপনার ক্লাসে এখনো কোনো বিষয়/পরীক্ষা যুক্ত করা হয়নি।</p>
             </div>
           ) : visibleSubjects.length === 0 ? (
             <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-10 text-center">
@@ -434,113 +507,129 @@ export default function DashboardPage() {
               <p className="text-sm text-slate-500 dark:text-slate-400">এই ক্লাসে এখনো কোনো বিষয়/পরীক্ষা যুক্ত করা হয়নি।</p>
             </div>
           ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
-              {visibleSubjects.map((subject) => {
-                const examTime = subject.examDate?.toDate
-                  ? subject.examDate.toDate().getTime()
-                  : new Date(subject.examDate).getTime();
-                const diff = examTime - now;
-                const isLive = diff <= 0;
-                const isDone = attemptedExamIds.has(subject.examId);
-
-                return (
-                  <div
-                    key={subject.id}
-                    className="group relative overflow-hidden bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4 sm:p-5 flex flex-col justify-between hover:shadow-lg hover:shadow-slate-200/50 dark:hover:shadow-none hover:border-emerald-200 dark:hover:border-emerald-800 transition-all duration-200 active:scale-[0.99]"
-                  >
-                    {/* ✅ স্ট্যাটাস অনুযায়ী বাম পাশে রঙের একটা accent bar */}
-                    <div
-                      className={`absolute left-0 top-0 bottom-0 w-1 ${
-                        isLive ? "bg-rose-400" : isDone ? "bg-green-400" : "bg-emerald-300"
-                      }`}
-                    />
-
-                    <div>
-                      <div className="flex items-start justify-between gap-2 mb-3">
-                        <h4 className="font-bold text-slate-800 dark:text-slate-100 leading-snug">{subject.name}</h4>
-                        {isLive ? (
-                          <span className="flex items-center gap-1 text-[11px] font-bold px-2 py-1 rounded-full bg-rose-50 text-rose-600 dark:bg-rose-400/10 dark:text-rose-300 shrink-0">
-                            <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse" />
-                            লাইভ
-                          </span>
-                        ) : isDone ? (
-                          <span className="text-[11px] font-bold px-2 py-1 rounded-full bg-green-50 text-green-700 dark:bg-green-400/10 dark:text-green-300 shrink-0">
-                            ✅ সম্পন্ন
-                          </span>
-                        ) : (
-                          <span className="text-[11px] font-bold px-2 py-1 rounded-full bg-blue-50 text-blue-600 dark:bg-blue-400/10 dark:text-blue-300 shrink-0">
-                            আসছে
-                          </span>
-                        )}
-                      </div>
-
-                      <div className="bg-slate-50 dark:bg-slate-800/60 rounded-xl p-3 text-center border border-slate-100 dark:border-slate-800">
-                        {isLive ? (
-                          <p className="text-sm font-bold text-rose-600 dark:text-rose-400">পরীক্ষা চলছে — এখনই অংশ নিন</p>
-                        ) : isDone ? (
-                          <p className="text-sm font-bold text-green-600 dark:text-green-400">আপনি এই পরীক্ষা দিয়েছেন ✅</p>
-                        ) : (
-                          <>
-                            <p className="text-[11px] text-slate-500 dark:text-slate-400 mb-1">শুরু হতে বাকি</p>
-                            <p className="text-lg font-extrabold text-emerald-600 dark:text-emerald-400 font-mono">
-                              {formatCountdown(diff)}
-                            </p>
-                          </>
-                        )}
-                      </div>
-
-                      <div className="flex items-center justify-between mt-2">
-                        <p className="text-[11px] text-slate-400 dark:text-slate-500">
-                          ⏳ {subject.durationMinutes || 30} মিনিট
-                        </p>
-                        {/* ✅ আগে দেওয়া থাকলে এবার দিলে এটা যে practice/re-attempt তা স্পষ্ট করে জানানো হচ্ছে */}
-                        {isDone && (
-                          <p className="text-[11px] font-bold text-amber-600 dark:text-amber-400">
-                            🔁 আবার দিলে প্র্যাকটিস হিসেবে গণ্য হবে
-                          </p>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="mt-4 flex gap-2">
-                      <button
-                        onClick={() => setPreparationSubject(subject)}
-                        disabled={isLive || !subject.preparation || subject.preparation.length === 0}
-                        title={
-                          isLive
-                            ? "কাউন্টডাউন শেষ — প্রস্তুতি বন্ধ"
-                            : !subject.preparation || subject.preparation.length === 0
-                            ? "এই বিষয়ে এখনো প্রস্তুতির প্রশ্ন যুক্ত করা হয়নি"
-                            : "প্রশ্ন ও উত্তর দিয়ে প্রস্তুতি নিন"
-                        }
-                        className={`flex-1 py-2.5 rounded-xl font-bold text-sm transition ${
-                          isLive || !subject.preparation || subject.preparation.length === 0
-                            ? "bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-600 cursor-not-allowed"
-                            : "bg-amber-50 dark:bg-amber-400/10 text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-400/20 active:scale-95"
-                        }`}
-                      >
-                        📘 প্রস্তুতি
-                      </button>
-                      {/* ✅ isDone হলেও বাটন disabled না — বার বার দেওয়া যাবে,
-                          শুধু প্রথমবারের স্কোরই ডাটাবেসে সেভ থাকে (quiz page এ হ্যান্ডল হয়) */}
-                      <button
-                        onClick={() => router.push(`/quiz?subject=${subject.examId}`)}
-                        disabled={!isLive}
-                        title={isDone ? "আগে একবার দেওয়া হয়েছে — এবার দিলে এটি প্র্যাকটিস অ্যাটেম্পট হবে" : undefined}
-                        className={`flex-1 py-2.5 rounded-xl font-bold text-sm text-white transition ${
-                          !isLive
-                            ? "bg-slate-300 dark:bg-slate-700 cursor-not-allowed"
-                            : isDone
-                            ? "bg-amber-600 hover:bg-amber-700 active:scale-95"
-                            : "bg-emerald-600 hover:bg-emerald-700 active:scale-95"
-                        }`}
-                      >
-                        {!isLive ? "অপেক্ষা করুন" : isDone ? "আবার দিন (প্র্যাকটিস) ↻" : "পরীক্ষা দিন →"}
-                      </button>
-                    </div>
+            <div className="space-y-6">
+              {subjectNameGroups.map(([subjectName, subjectsInGroup]) => (
+                <div key={subjectName}>
+                  {/* ✅ Subject Name সেকশন হেডার — সিলেক্ট করা ক্লাসের ভেতরে বিষয় অনুযায়ী আলাদা গ্রুপ */}
+                  <div className="flex items-center gap-2 mb-3">
+                    <span className="text-base">📚</span>
+                    <h4 className="font-bold text-slate-700 dark:text-slate-200 text-sm sm:text-base tracking-tight">
+                      {subjectName}
+                    </h4>
+                    <span className="text-[11px] font-medium text-slate-400 dark:text-slate-500">
+                      ({subjectsInGroup.length}টি পরীক্ষা)
+                    </span>
                   </div>
-                );
-              })}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
+                    {subjectsInGroup.map((subject) => {
+                      const examTime = subject.examDate?.toDate
+                        ? subject.examDate.toDate().getTime()
+                        : new Date(subject.examDate).getTime();
+                      const diff = examTime - now;
+                      const isLive = diff <= 0;
+                      const isDone = attemptedExamIds.has(subject.examId);
+      
+                      return (
+                        <div
+                          key={subject.id}
+                          className="group relative overflow-hidden bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4 sm:p-5 flex flex-col justify-between hover:shadow-lg hover:shadow-slate-200/50 dark:hover:shadow-none hover:border-emerald-200 dark:hover:border-emerald-800 transition-all duration-200 active:scale-[0.99]"
+                        >
+                          {/* ✅ স্ট্যাটাস অনুযায়ী বাম পাশে রঙের একটা accent bar */}
+                          <div
+                            className={`absolute left-0 top-0 bottom-0 w-1 ${
+                              isLive ? "bg-rose-400" : isDone ? "bg-green-400" : "bg-emerald-300"
+                            }`}
+                          />
+      
+                          <div>
+                            <div className="flex items-start justify-between gap-2 mb-3">
+                              <h4 className="font-bold text-slate-800 dark:text-slate-100 leading-snug">{subject.name}</h4>
+                              {isLive ? (
+                                <span className="flex items-center gap-1 text-[11px] font-bold px-2 py-1 rounded-full bg-rose-50 text-rose-600 dark:bg-rose-400/10 dark:text-rose-300 shrink-0">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse" />
+                                  লাইভ
+                                </span>
+                              ) : isDone ? (
+                                <span className="text-[11px] font-bold px-2 py-1 rounded-full bg-green-50 text-green-700 dark:bg-green-400/10 dark:text-green-300 shrink-0">
+                                  ✅ সম্পন্ন
+                                </span>
+                              ) : (
+                                <span className="text-[11px] font-bold px-2 py-1 rounded-full bg-blue-50 text-blue-600 dark:bg-blue-400/10 dark:text-blue-300 shrink-0">
+                                  আসছে
+                                </span>
+                              )}
+                            </div>
+      
+                            <div className="bg-slate-50 dark:bg-slate-800/60 rounded-xl p-3 text-center border border-slate-100 dark:border-slate-800">
+                              {isLive ? (
+                                <p className="text-sm font-bold text-rose-600 dark:text-rose-400">পরীক্ষা চলছে — এখনই অংশ নিন</p>
+                              ) : isDone ? (
+                                <p className="text-sm font-bold text-green-600 dark:text-green-400">আপনি এই পরীক্ষা দিয়েছেন ✅</p>
+                              ) : (
+                                <>
+                                  <p className="text-[11px] text-slate-500 dark:text-slate-400 mb-1">শুরু হতে বাকি</p>
+                                  <p className="text-lg font-extrabold text-emerald-600 dark:text-emerald-400 font-mono">
+                                    {formatCountdown(diff)}
+                                  </p>
+                                </>
+                              )}
+                            </div>
+      
+                            <div className="flex items-center justify-between mt-2">
+                              <p className="text-[11px] text-slate-400 dark:text-slate-500">
+                                ⏳ {subject.durationMinutes || 30} মিনিট
+                              </p>
+                              {/* ✅ আগে দেওয়া থাকলে এবার দিলে এটা যে practice/re-attempt তা স্পষ্ট করে জানানো হচ্ছে */}
+                              {isDone && (
+                                <p className="text-[11px] font-bold text-amber-600 dark:text-amber-400">
+                                  🔁 আবার দিলে প্র্যাকটিস হিসেবে গণ্য হবে
+                                </p>
+                              )}
+                            </div>
+                          </div>
+      
+                          <div className="mt-4 flex gap-2">
+                            <button
+                              onClick={() => setPreparationSubject(subject)}
+                              disabled={isLive || !subject.preparation || subject.preparation.length === 0}
+                              title={
+                                isLive
+                                  ? "কাউন্টডাউন শেষ — প্রস্তুতি বন্ধ"
+                                  : !subject.preparation || subject.preparation.length === 0
+                                  ? "এই বিষয়ে এখনো প্রস্তুতির প্রশ্ন যুক্ত করা হয়নি"
+                                  : "প্রশ্ন ও উত্তর দিয়ে প্রস্তুতি নিন"
+                              }
+                              className={`flex-1 py-2.5 rounded-xl font-bold text-sm transition ${
+                                isLive || !subject.preparation || subject.preparation.length === 0
+                                  ? "bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-600 cursor-not-allowed"
+                                  : "bg-amber-50 dark:bg-amber-400/10 text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-400/20 active:scale-95"
+                              }`}
+                            >
+                              📘 প্রস্তুতি
+                            </button>
+                            {/* ✅ isDone হলেও বাটন disabled না — বার বার দেওয়া যাবে,
+                                শুধু প্রথমবারের স্কোরই ডাটাবেসে সেভ থাকে (quiz page এ হ্যান্ডল হয়) */}
+                            <button
+                              onClick={() => router.push(`/quiz?subject=${subject.examId}`)}
+                              disabled={!isLive}
+                              title={isDone ? "আগে একবার দেওয়া হয়েছে — এবার দিলে এটি প্র্যাকটিস অ্যাটেম্পট হবে" : undefined}
+                              className={`flex-1 py-2.5 rounded-xl font-bold text-sm text-white transition ${
+                                !isLive
+                                  ? "bg-slate-300 dark:bg-slate-700 cursor-not-allowed"
+                                  : isDone
+                                  ? "bg-amber-600 hover:bg-amber-700 active:scale-95"
+                                  : "bg-emerald-600 hover:bg-emerald-700 active:scale-95"
+                              }`}
+                            >
+                              {!isLive ? "অপেক্ষা করুন" : isDone ? "আবার দিন (প্র্যাকটিস) ↻" : "পরীক্ষা দিন →"}
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
             </div>
           )}
         </div>
@@ -729,6 +818,24 @@ export default function DashboardPage() {
                   placeholder="আপনার নাম লিখুন"
                 />
               </div>
+              {/* ✅ Admin না হলে নিজের ক্লাস সিলেক্ট করতে হবে — dashboard-এ শুধু এই ক্লাসের পরীক্ষাই দেখানো হবে */}
+              {!userData?.isAdmin && (
+                <div>
+                  <label className="text-sm font-bold text-slate-600 dark:text-slate-300 mb-1 block">আপনার ক্লাস</label>
+                  <select
+                    required
+                    value={newStudentClass}
+                    onChange={(e) => setNewStudentClass(e.target.value)}
+                    className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 p-3 text-sm focus:outline-none focus:border-emerald-400 dark:focus:border-emerald-500"
+                  >
+                    <option value="">— ক্লাস নির্বাচন করুন —</option>
+                    {CLASS_ORDER.map((c) => (
+                      <option key={c} value={c}>ক্লাস {getClassDisplayLabel(c)}</option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">আপনি শুধু নিজের ক্লাসের পরীক্ষাই দেখতে ও দিতে পারবেন।</p>
+                </div>
+              )}
               <div className="flex gap-3">
                 <button
                   type="button"

@@ -33,6 +33,7 @@ type UserData = {
   total_score: number; photoURL?: string;
   isAdmin?: boolean; retakeAccess?: boolean;
   hiddenFromLeaderboard?: boolean; // ✅ লিডারবোর্ড থেকে লুকানো
+  studentClass?: string; // ✅ এই ইউজার কোন ক্লাসের student — dashboard-এ শুধু এই ক্লাসের পরীক্ষাই দেখানো হয়
 };
 
 type Attempt = {
@@ -477,6 +478,13 @@ export default function AdminPage() {
     fetchTab("users");
   };
 
+  // ✅ Admin এই student টা কোন ক্লাসের তা সেট/পরিবর্তন করতে পারবে — dashboard-এ এই অনুযায়ী পরীক্ষা ফিল্টার হয়
+  const updateUserClass = async (u: UserData, newClass: string) => {
+    await updateDoc(doc(db, "users", u.id), { studentClass: newClass });
+    setUsers(prev => prev.map(x => x.id === u.id ? { ...x, studentClass: newClass } : x));
+    showToast(newClass ? `${u.name} এর ক্লাস "ক্লাস ${newClass}" সেট করা হয়েছে ✅` : `${u.name} এর ক্লাস সরানো হয়েছে`);
+  };
+
   const toggleRetake = async (u: UserData) => {
     await updateDoc(doc(db, "users", u.id), { retakeAccess: !u.retakeAccess });
     showToast(!u.retakeAccess ? `${u.name} কে Retake দেওয়া হয়েছে ✅` : `${u.name} এর Retake সরানো হয়েছে`);
@@ -824,9 +832,24 @@ export default function AdminPage() {
                           <p className="text-sm font-extrabold text-slate-800 dark:text-slate-100 truncate">{u.name || "অজানা"}</p>
                           {u.isAdmin && <Badge color="bg-violet-50 dark:bg-violet-400/10 text-violet-700 dark:text-violet-300">Admin</Badge>}
                           {u.retakeAccess && <Badge color="bg-amber-50 dark:bg-amber-400/10 text-amber-700 dark:text-amber-300">Retake</Badge>}
+                          {!u.isAdmin && !u.studentClass && <Badge color="bg-red-50 dark:bg-red-400/10 text-red-600 dark:text-red-400">⚠️ ক্লাস সেট নাই</Badge>}
                         </div>
                         <p className="text-xs text-slate-400 truncate">{u.email}</p>
                         <p className="text-xs font-extrabold text-indigo-600 dark:text-indigo-400 mt-1">⭐ {u.total_score || 0} লাইফটাইম পয়েন্ট</p>
+                        {/* class assignment dropdown */}
+                        <div className="flex items-center gap-1.5 mt-2">
+                          <label className="text-[11px] font-bold text-slate-400 dark:text-slate-500 shrink-0">🎓 ক্লাস:</label>
+                          <select
+                            value={u.studentClass || ""}
+                            onChange={e => updateUserClass(u, e.target.value)}
+                            className="text-[11px] font-bold rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-200 px-2 py-1 focus:outline-none focus:border-indigo-400"
+                          >
+                            <option value="">— নির্ধারণ করুন —</option>
+                            {CLASS_OPTIONS.map(c => (
+                              <option key={c} value={c}>ক্লাস {c}</option>
+                            ))}
+                          </select>
+                        </div>
                       </div>
                     </div>
 
@@ -954,7 +977,7 @@ export default function AdminPage() {
       </div>
 
       {qModal.open && <QuestionModal initial={qModal.data} subjects={subjects} onSave={saveQuestion} onClose={() => setQModal({ open: false })} />}
-      {sModal.open && <SubjectModal initial={sModal.data} onSave={saveSubject} onClose={() => setSModal({ open: false })} />}
+      {sModal.open && <SubjectModal initial={sModal.data} existingSubjects={subjects} onSave={saveSubject} onClose={() => setSModal({ open: false })} />}
 
       {/* JSON Upload Modal */}
       {jsonModal?.open && (
@@ -1039,8 +1062,9 @@ function QuestionModal({ initial, subjects, onSave, onClose }: {
 }
 
 // ─── Subject Modal ────────────────────────────────────────────────────────────
-function SubjectModal({ initial, onSave, onClose }: {
+function SubjectModal({ initial, existingSubjects, onSave, onClose }: {
   initial?: Subject;
+  existingSubjects: Subject[];
   onSave: (data: any, id?: string) => Promise<void>;
   onClose: () => void;
 }) {
@@ -1050,7 +1074,17 @@ function SubjectModal({ initial, onSave, onClose }: {
     return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
   };
 
+  // ✅ আগে যেসব বিষয়ের নাম ব্যবহার হয়েছে তার ইউনিক তালিকা — যাতে নতুন পরীক্ষা যোগ করার সময়
+  // আগের নামের সাথে হুবহু মিল রেখে select করা যায় (dashboard-এ subject-name গ্রুপিং ঠিকঠাক কাজ করার জন্য)
+  const uniqueSubjectNames = Array.from(new Set(existingSubjects.map(s => s.name).filter(Boolean))).sort((a, b) =>
+    a.localeCompare(b, "bn")
+  );
+
   const [form, setForm] = useState({ name: initial?.name || "", examId: initial?.examId || "", examDate: toLocalInput(initial?.examDate), durationMinutes: initial?.durationMinutes || 30, maxWarnings: initial?.maxWarnings ?? 3, classLevel: initial?.classLevel || "" });
+  // ✅ ড্রপডাউনে আগের তালিকায় নাম না থাকলে (বা একদমই নতুন প্রজেক্ট হলে) সরাসরি টেক্সট ইনপুট মোডে শুরু হবে
+  const [isNewSubjectName, setIsNewSubjectName] = useState(
+    uniqueSubjectNames.length === 0 || (!!initial?.name && !uniqueSubjectNames.includes(initial.name))
+  );
   const [prepItems, setPrepItems] = useState<{ question: string; answer: string }[]>(initial?.preparation || []);
   const [saving, setSaving] = useState(false);
 
@@ -1074,7 +1108,53 @@ function SubjectModal({ initial, onSave, onClose }: {
           <button onClick={onClose} className="text-slate-400 text-xl hover:text-slate-600 dark:hover:text-slate-200">✕</button>
         </div>
         <div className="p-4 space-y-4">
-          {[{ label: "বিষয়ের নাম (Subject Name) *", key: "name", placeholder: "যেমন: Business Mathematics" }, { label: "ইউনিক Exam ID *", key: "examId", placeholder: "যেমন: math_2026" }].map(f => (
+          <div>
+            <label className="text-xs font-bold text-slate-500 dark:text-slate-400 mb-1 block">বিষয়ের নাম (Subject Name) *</label>
+            {!isNewSubjectName ? (
+              <div className="flex gap-2">
+                <select
+                  value={uniqueSubjectNames.includes(form.name) ? form.name : ""}
+                  onChange={e => {
+                    if (e.target.value === "__new__") {
+                      setIsNewSubjectName(true);
+                      setForm(p => ({ ...p, name: "" }));
+                    } else {
+                      setForm(p => ({ ...p, name: e.target.value }));
+                    }
+                  }}
+                  className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 p-3 text-sm focus:outline-none focus:border-indigo-400"
+                >
+                  <option value="">— বিষয় নির্বাচন করুন —</option>
+                  {uniqueSubjectNames.map(n => (
+                    <option key={n} value={n}>{n}</option>
+                  ))}
+                  <option value="__new__">➕ নতুন বিষয়ের নাম যুক্ত করুন</option>
+                </select>
+              </div>
+            ) : (
+              <div className="space-y-1.5">
+                <input
+                  value={form.name}
+                  onChange={e => setForm(p => ({ ...p, name: e.target.value }))}
+                  placeholder="যেমন: Business Mathematics"
+                  className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 p-3 text-sm focus:outline-none focus:border-indigo-400"
+                />
+                {uniqueSubjectNames.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setIsNewSubjectName(false)}
+                    className="text-[11px] font-bold text-indigo-600 dark:text-indigo-400 hover:underline"
+                  >
+                    ← আগের তালিকা থেকে বেছে নিন
+                  </button>
+                )}
+                <p className="text-[11px] text-slate-400 dark:text-slate-500">
+                  💡 আগে কোনো পরীক্ষায় এই নাম ব্যবহার করে থাকলে হুবহু একই বানানে লিখুন — তাহলে dashboard-এ একই বিষয়ের সব পরীক্ষা একসাথে গ্রুপ হয়ে দেখাবে।
+                </p>
+              </div>
+            )}
+          </div>
+          {[{ label: "ইউনিক Exam ID *", key: "examId", placeholder: "যেমন: math_2026" }].map(f => (
             <div key={f.key}>
               <label className="text-xs font-bold text-slate-500 dark:text-slate-400 mb-1 block">{f.label}</label>
               <input value={(form as any)[f.key]} onChange={e => setForm(p => ({ ...p, [f.key]: e.target.value }))} placeholder={f.placeholder} className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 p-3 text-sm focus:outline-none focus:border-indigo-400" />
