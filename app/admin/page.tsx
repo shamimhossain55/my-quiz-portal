@@ -22,7 +22,11 @@ type Subject = {
   examDate: any; durationMinutes: number;
   maxWarnings?: number; // ✅ anti-cheating: কতবার ট্যাব পরিবর্তনের পর অটো-সাবমিট হবে
   preparation?: { question: string; answer: string }[];
+  classLevel: string; // ✅ এই বিষয়টি কোন ক্লাসের — যেমন "V", "VI", "XII"
 };
+
+// ✅ ক্লাস নির্বাচনের জন্য নির্দিষ্ট ক্রমে অপশন তালিকা
+const CLASS_OPTIONS = ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII"];
 
 type UserData = {
   id: string; name: string; email: string;
@@ -485,6 +489,25 @@ export default function AdminPage() {
     fetchTab("users");
   };
 
+  // ✅ পুরো প্রোফাইল রিসেট — স্কোর + এই ইউজারের দেওয়া সব পরীক্ষার attempt (history) মুছে যাবে
+  // ফলে dashboard-এ আবার সব পরীক্ষা "আসছে/দেওয়া হয়নি" হিসেবে দেখাবে, যেন একদম নতুন ইউজার
+  const resetUserProfile = async (u: UserData) => {
+    try {
+      const aSnap = await getDocs(collection(db, "user_attempts"));
+      const userAttempts = aSnap.docs.filter(d => d.data().uid === u.id);
+
+      const batch = writeBatch(db);
+      userAttempts.forEach(d => batch.delete(doc(db, "user_attempts", d.id)));
+      batch.update(doc(db, "users", u.id), { total_score: 0 });
+      await batch.commit();
+
+      showToast(`${u.name} এর পুরো প্রোফাইল রিসেট হয়েছে — সব পরীক্ষার রেকর্ড ও স্কোর মুছে গেছে 🔁`, "error");
+      fetchTab("users");
+    } catch (e) {
+      showToast("প্রোফাইল রিসেট করতে সমস্যা হয়েছে", "error");
+    }
+  };
+
   const toggleLeaderboard = async (u: UserData) => {
     const newVal = !u.hiddenFromLeaderboard;
     await updateDoc(doc(db, "users", u.id), { hiddenFromLeaderboard: newVal });
@@ -754,6 +777,9 @@ export default function AdminPage() {
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2 flex-wrap mb-1.5">
                             <h4 className="font-extrabold text-slate-800 dark:text-slate-100 text-sm leading-snug">{s.name}</h4>
+                            <Badge color="bg-violet-50 dark:bg-violet-400/10 text-violet-700 dark:text-violet-300">
+                              ক্লাস {s.classLevel || "—"}
+                            </Badge>
                             <Badge color={isPast ? "bg-slate-100 dark:bg-slate-800 text-slate-500" : "bg-indigo-50 dark:bg-indigo-400/10 text-indigo-600 dark:text-indigo-400"}>
                               {isPast ? "সমাপ্ত" : "আসন্ন"}
                             </Badge>
@@ -829,6 +855,9 @@ export default function AdminPage() {
                       </button>
                       <button onClick={() => setConfirmModal({ open: true, msg: `${u.name} এর মোট স্কোর ০ (শূন্য) করতে চান?`, onOk: () => resetScore(u) })} className="text-[11px] bg-slate-100 dark:bg-slate-800 text-red-500 px-2.5 py-1.5 rounded-lg font-bold hover:bg-red-50 dark:hover:bg-red-900/20 transition ml-auto">
                         Reset Score
+                      </button>
+                      <button onClick={() => setConfirmModal({ open: true, msg: `সতর্কবার্তা! ${u.name} এর সম্পূর্ণ প্রোফাইল রিসেট হবে — স্কোর ০ হয়ে যাবে এবং তার দেওয়া সব পরীক্ষার রেকর্ড (কোন পরীক্ষা দিয়েছে, কত স্কোর পেয়েছে) চিরতরে মুছে যাবে। আগের মতো একদম নতুন ইউজার হয়ে যাবে। নিশ্চিত করবেন?`, onOk: () => resetUserProfile(u) })} className="text-[11px] bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 px-2.5 py-1.5 rounded-lg font-bold hover:bg-red-100 dark:hover:bg-red-900/40 transition">
+                        🔁 প্রোফাইল সম্পূর্ণ রিসেট
                       </button>
                     </div>
                   </div>
@@ -1021,7 +1050,7 @@ function SubjectModal({ initial, onSave, onClose }: {
     return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
   };
 
-  const [form, setForm] = useState({ name: initial?.name || "", examId: initial?.examId || "", examDate: toLocalInput(initial?.examDate), durationMinutes: initial?.durationMinutes || 30, maxWarnings: initial?.maxWarnings ?? 3 });
+  const [form, setForm] = useState({ name: initial?.name || "", examId: initial?.examId || "", examDate: toLocalInput(initial?.examDate), durationMinutes: initial?.durationMinutes || 30, maxWarnings: initial?.maxWarnings ?? 3, classLevel: initial?.classLevel || "" });
   const [prepItems, setPrepItems] = useState<{ question: string; answer: string }[]>(initial?.preparation || []);
   const [saving, setSaving] = useState(false);
 
@@ -1031,8 +1060,9 @@ function SubjectModal({ initial, onSave, onClose }: {
 
   const handleSubmit = async () => {
     if (!form.name || !form.examId || !form.examDate) { alert("নাম, Exam ID ও তারিখ আবশ্যক!"); return; }
+    if (!form.classLevel) { alert("এই বিষয়টি কোন ক্লাসের তা নির্বাচন করুন!"); return; }
     setSaving(true);
-    await onSave({ name: form.name, examId: form.examId, examDate: Timestamp.fromDate(new Date(form.examDate)), durationMinutes: Number(form.durationMinutes), maxWarnings: Number((form as any).maxWarnings), preparation: prepItems.filter(p => p.question && p.answer) }, initial?.id);
+    await onSave({ name: form.name, examId: form.examId, examDate: Timestamp.fromDate(new Date(form.examDate)), durationMinutes: Number(form.durationMinutes), maxWarnings: Number((form as any).maxWarnings), classLevel: form.classLevel, preparation: prepItems.filter(p => p.question && p.answer) }, initial?.id);
     setSaving(false);
   };
 
@@ -1050,6 +1080,15 @@ function SubjectModal({ initial, onSave, onClose }: {
               <input value={(form as any)[f.key]} onChange={e => setForm(p => ({ ...p, [f.key]: e.target.value }))} placeholder={f.placeholder} className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 p-3 text-sm focus:outline-none focus:border-indigo-400" />
             </div>
           ))}
+          <div>
+            <label className="text-xs font-bold text-slate-500 dark:text-slate-400 mb-1 block">এই বিষয়টি কোন ক্লাসের? *</label>
+            <select value={form.classLevel} onChange={e => setForm(p => ({ ...p, classLevel: e.target.value }))} className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 p-3 text-sm focus:outline-none focus:border-indigo-400">
+              <option value="">— ক্লাস নির্বাচন করুন —</option>
+              {CLASS_OPTIONS.map(c => (
+                <option key={c} value={c}>ক্লাস {c}</option>
+              ))}
+            </select>
+          </div>
           <div>
             <label className="text-xs font-bold text-slate-500 dark:text-slate-400 mb-1 block">পরীক্ষার সিডিউল (তারিখ ও সময়) *</label>
             <input type="datetime-local" value={form.examDate} onChange={e => setForm(p => ({ ...p, examDate: e.target.value }))} className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 p-3 text-sm focus:outline-none focus:border-indigo-400" />

@@ -22,7 +22,11 @@ type Subject = {
   examDate: any;         // Firestore Timestamp
   durationMinutes?: number;
   preparation?: PreparationItem[]; // ✅ countdown চলাকালীন দেখার জন্য answer-সহ প্রশ্ন
+  classLevel: string;    // ✅ কোন ক্লাসের বিষয় — Firestore এর "class" ফিল্ড থেকে আসবে, যেমন "V", "VI", "XII"
 };
+
+// ✅ ক্লাসগুলোকে সঠিক ক্রমে সাজানোর জন্য (Firestore থেকে আসা order নির্ভরযোগ্য না হতে পারে)
+const CLASS_ORDER = ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII"];
 
 export default function DashboardPage() {
   const [user, setUser] = useState<any>(null);
@@ -42,6 +46,7 @@ export default function DashboardPage() {
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [now, setNow] = useState<number>(Date.now());
   const [preparationSubject, setPreparationSubject] = useState<Subject | null>(null);
+  const [selectedClass, setSelectedClass] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const router = useRouter();
@@ -121,9 +126,25 @@ export default function DashboardPage() {
           examDate: data.examDate,
           durationMinutes: data.durationMinutes || 30,
           preparation: Array.isArray(data.preparation) ? data.preparation : [],
+          classLevel: (data.class || data.classLevel || "অন্যান্য").toString().trim(),
         };
       });
       setSubjects(subjList);
+
+      // ✅ Firestore থেকে পাওয়া ক্লাসগুলো নির্দিষ্ট ক্রমে সাজিয়ে প্রথমটা ডিফল্ট হিসেবে সিলেক্ট করা
+      setSelectedClass(prev => {
+        if (prev && subjList.some(s => s.classLevel === prev)) return prev;
+        const uniqueClasses = Array.from(new Set(subjList.map(s => s.classLevel)));
+        uniqueClasses.sort((a, b) => {
+          const ai = CLASS_ORDER.indexOf(a);
+          const bi = CLASS_ORDER.indexOf(b);
+          if (ai === -1 && bi === -1) return a.localeCompare(b);
+          if (ai === -1) return 1;
+          if (bi === -1) return -1;
+          return ai - bi;
+        });
+        return uniqueClasses[0] || null;
+      });
 
       // ✅ ইউজারের attempt করা সব examId — কোন subject এ আগে পরীক্ষা দেওয়া হয়েছে তা বোঝার জন্য
       const attemptsQ = query(collection(db, "user_attempts"), limit(200));
@@ -242,6 +263,17 @@ export default function DashboardPage() {
   const avgScore = totalQuestionsSum > 0 ? Math.round((totalCorrect / totalQuestionsSum) * 100) : 0;
   const badge = getBadge(totalCorrect, totalQuestionsSum);
 
+  // ✅ ক্লাস অনুযায়ী subject গুলোকে গ্রুপ করার জন্য — শুধু সিলেক্ট করা ক্লাসের subject গুলো দেখানো হবে
+  const sortedClasses = Array.from(new Set(subjects.map(s => s.classLevel))).sort((a, b) => {
+    const ai = CLASS_ORDER.indexOf(a);
+    const bi = CLASS_ORDER.indexOf(b);
+    if (ai === -1 && bi === -1) return a.localeCompare(b);
+    if (ai === -1) return 1;
+    if (bi === -1) return -1;
+    return ai - bi;
+  });
+  const visibleSubjects = subjects.filter(s => s.classLevel === selectedClass);
+
   const AvatarOrInitial = ({ size = "w-14 h-14", textSize = "text-xl" }: { size?: string; textSize?: string }) =>
     userData?.photoURL ? (
       <img
@@ -357,9 +389,9 @@ export default function DashboardPage() {
                 <p className="text-xl sm:text-2xl font-extrabold text-emerald-600 dark:text-emerald-400">{avgScore}%</p>
                 <p className="text-[11px] font-medium text-emerald-600/80 dark:text-emerald-400/80 mt-0.5">গড় সঠিক হার</p>
               </div>
-              <div className="bg-slate-50 dark:bg-slate-800/60 border border-slate-100 dark:border-slate-800 rounded-xl sm:rounded-2xl p-2.5 sm:p-3 text-center">
-                <p className="text-xl sm:text-2xl font-extrabold text-slate-800 dark:text-white">#{myRank || "—"}</p>
-                <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400 mt-0.5">র‍্যাঙ্ক</p>
+              <div className="relative overflow-hidden bg-gradient-to-br from-amber-400 to-orange-500 border border-amber-300 dark:border-amber-700 rounded-xl sm:rounded-2xl p-2.5 sm:p-3 text-center shadow-sm">
+                <p className="text-xl sm:text-2xl font-extrabold text-white drop-shadow">#{myRank || "—"}</p>
+                <p className="text-[11px] font-bold text-amber-50 mt-0.5">🏅 র‍্যাঙ্ক</p>
               </div>
             </div>
           </div>
@@ -372,14 +404,38 @@ export default function DashboardPage() {
             <h3 className="font-extrabold text-slate-800 dark:text-slate-100 text-lg tracking-tight">পরীক্ষাসমূহ</h3>
           </div>
 
+          {/* ✅ ক্লাস ট্যাব — যে ক্লাসে ক্লিক করা হবে শুধু সেই ক্লাসের subject গুলোই নিচে দেখাবে */}
+          {sortedClasses.length > 0 && (
+            <div className="flex items-center gap-2 mb-4 overflow-x-auto pb-1 -mx-1 px-1 scrollbar-hide">
+              {sortedClasses.map((cls) => (
+                <button
+                  key={cls}
+                  onClick={() => setSelectedClass(cls)}
+                  className={`shrink-0 px-4 py-2 rounded-xl text-sm font-bold transition whitespace-nowrap ${
+                    selectedClass === cls
+                      ? "bg-emerald-600 text-white shadow-sm"
+                      : "bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-800 hover:border-emerald-300 dark:hover:border-emerald-700"
+                  }`}
+                >
+                  {cls === "অন্যান্য" ? cls : `ক্লাস ${cls}`}
+                </button>
+              ))}
+            </div>
+          )}
+
           {subjects.length === 0 ? (
             <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-10 text-center">
               <p className="text-3xl mb-2">🗒️</p>
               <p className="text-sm text-slate-500 dark:text-slate-400">এখনো কোনো বিষয়/পরীক্ষা যুক্ত করা হয়নি।</p>
             </div>
+          ) : visibleSubjects.length === 0 ? (
+            <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-10 text-center">
+              <p className="text-3xl mb-2">🗒️</p>
+              <p className="text-sm text-slate-500 dark:text-slate-400">এই ক্লাসে এখনো কোনো বিষয়/পরীক্ষা যুক্ত করা হয়নি।</p>
+            </div>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
-              {subjects.map((subject) => {
+              {visibleSubjects.map((subject) => {
                 const examTime = subject.examDate?.toDate
                   ? subject.examDate.toDate().getTime()
                   : new Date(subject.examDate).getTime();
@@ -490,53 +546,131 @@ export default function DashboardPage() {
         </div>
 
         {/* ✅ লিডারবোর্ড */}
-        <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4 sm:p-6">
-          <div className="flex items-center gap-2 mb-4 pb-3 border-b border-slate-200 dark:border-slate-800">
+        <div className="relative bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4 sm:p-6 overflow-hidden">
+          {/* আবছা ব্যাকগ্রাউন্ড গ্লো */}
+          <div className="pointer-events-none absolute -top-16 -right-16 w-48 h-48 rounded-full bg-amber-300/20 dark:bg-amber-400/10 blur-3xl" />
+          <div className="pointer-events-none absolute -bottom-20 -left-16 w-48 h-48 rounded-full bg-emerald-300/20 dark:bg-emerald-400/10 blur-3xl" />
+
+          <div className="relative flex items-center gap-2 mb-4 pb-3 border-b border-slate-200 dark:border-slate-800">
             <span className="text-xl">🏆</span>
             <h3 className="font-bold text-slate-800 dark:text-slate-100">লিডারবোর্ড</h3>
+            <span className="ml-auto text-[11px] font-bold text-slate-400 dark:text-slate-500">টপ {leaderboard.length}</span>
           </div>
-          <div className="space-y-2">
-            {leaderboard.length > 0 ? leaderboard.map((leader, index) => {
-              const rankIcons = ["🥇", "🥈", "🥉"];
-              const isMe = leader.id === user?.uid;
-              return (
-                <div
-                  key={leader.id}
-                  className={`flex items-center gap-3 p-3 rounded-xl border transition ${
-                    isMe
-                      ? "bg-emerald-50/60 dark:bg-emerald-950/30 border-emerald-100 dark:border-emerald-900"
-                      : "bg-slate-50 dark:bg-slate-800/60 border-slate-100 dark:border-slate-800"
-                  }`}
-                >
-                  <span className="text-lg w-7 text-center">
-                    {index < 3 ? rankIcons[index] : <span className="text-sm font-bold text-slate-500 dark:text-slate-400">{index + 1}</span>}
-                  </span>
-                  {leader.photoURL ? (
-                    <img src={leader.photoURL} alt="" className="w-8 h-8 rounded-full object-cover" />
-                  ) : (
-                    <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold ${
-                      isMe ? "bg-emerald-200 dark:bg-emerald-800 text-emerald-800 dark:text-emerald-100" : "bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300"
-                    }`}>
-                      {leader.name?.charAt(0).toUpperCase() || "?"}
-                    </div>
-                  )}
-                  <div className="flex-1">
-                    <p className={`text-sm font-bold ${isMe ? "text-emerald-700 dark:text-emerald-300" : "text-slate-700 dark:text-slate-200"}`}>
-                      {leader.name || "অজানা"}
-                      {isMe && <span className="ml-1 text-xs">(আমি)</span>}
-                    </p>
+
+          {leaderboard.length > 0 ? (
+            <div className="relative space-y-5">
+              {/* ✅ পডিয়াম — টপ ৩ */}
+              {(() => {
+                const top3 = leaderboard.slice(0, 3);
+                if (top3.length === 0) return null;
+                const order = top3.length === 3 ? [1, 0, 2] : top3.map((_, i) => i); // ২য়-১ম-৩য় বিন্যাস
+                const podiumStyle = [
+                  { h: "h-24", ring: "ring-amber-300 dark:ring-amber-500", grad: "from-amber-300 to-amber-500", crown: "👑", scale: "scale-105 sm:scale-110" },
+                  { h: "h-16", ring: "ring-slate-300 dark:ring-slate-500", grad: "from-slate-300 to-slate-400", crown: "🥈", scale: "" },
+                  { h: "h-12", ring: "ring-orange-300 dark:ring-orange-500", grad: "from-orange-300 to-orange-500", crown: "🥉", scale: "" },
+                ];
+                return (
+                  <div className="flex items-end justify-center gap-2 sm:gap-4 pt-2">
+                    {order.map((origIdx) => {
+                      if (!top3[origIdx]) return null;
+                      const leader = top3[origIdx];
+                      const isMe = leader.id === user?.uid;
+                      const style = podiumStyle[origIdx];
+                      return (
+                        <button
+                          key={leader.id}
+                          onClick={() => router.push(`/profile/${leader.id}`)}
+                          className={`flex flex-col items-center gap-1.5 w-1/3 ${style.scale} transition-transform hover:scale-105 active:scale-95 cursor-pointer`}
+                        >
+                          <div className="relative">
+                            <span className="absolute -top-5 left-1/2 -translate-x-1/2 text-lg sm:text-xl drop-shadow">{style.crown}</span>
+                            {leader.photoURL ? (
+                              <img
+                                src={leader.photoURL}
+                                alt=""
+                                className={`w-11 h-11 sm:w-14 sm:h-14 rounded-full object-cover ring-4 ${style.ring} ${isMe ? "ring-emerald-400 dark:ring-emerald-400" : ""}`}
+                              />
+                            ) : (
+                              <div className={`w-11 h-11 sm:w-14 sm:h-14 rounded-full flex items-center justify-center text-sm sm:text-base font-extrabold text-white bg-gradient-to-br ${style.grad} ring-4 ${style.ring} ${isMe ? "ring-emerald-400 dark:ring-emerald-400" : ""}`}>
+                                {leader.name?.charAt(0).toUpperCase() || "?"}
+                              </div>
+                            )}
+                          </div>
+                          <p className={`text-[11px] sm:text-xs font-bold text-center truncate w-full ${isMe ? "text-emerald-600 dark:text-emerald-400" : "text-slate-700 dark:text-slate-200"}`}>
+                            {leader.name?.split(" ")[0] || "অজানা"}{isMe && " (আমি)"}
+                          </p>
+                          <p className="text-[11px] sm:text-xs font-extrabold text-amber-600 dark:text-amber-400">{leader.total_score || 0} pts</p>
+                          <div className={`w-full ${style.h} rounded-t-xl bg-gradient-to-b ${style.grad} flex items-start justify-center pt-1.5 shadow-inner`}>
+                            <span className="text-white font-extrabold text-sm sm:text-base drop-shadow">{origIdx + 1}</span>
+                          </div>
+                        </button>
+                      );
+                    })}
                   </div>
-                  <span className={`text-xs font-bold px-2 py-1 rounded-lg ${
-                    isMe ? "bg-emerald-50 dark:bg-emerald-900/40 text-emerald-600 dark:text-emerald-300" : "bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border border-slate-100 dark:border-slate-800"
-                  }`}>
-                    {leader.total_score || 0} pts
-                  </span>
+                );
+              })()}
+
+              {/* ✅ বাকি র‍্যাঙ্কিং তালিকা (৪ নম্বর থেকে) */}
+              <div className="space-y-2">
+                {leaderboard.slice(3).map((leader, i) => {
+                  const index = i + 3;
+                  const isMe = leader.id === user?.uid;
+                  const prevScore = leaderboard[index - 1]?.total_score || 0;
+                  const gapToPrev = Math.max(prevScore - (leader.total_score || 0), 0);
+                  return (
+                    <button
+                      key={leader.id}
+                      onClick={() => router.push(`/profile/${leader.id}`)}
+                      className={`w-full flex items-center gap-3 p-3 rounded-xl border transition hover:shadow-sm hover:-translate-y-0.5 active:scale-[0.98] cursor-pointer text-left ${
+                        isMe
+                          ? "bg-emerald-50/70 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-900 ring-1 ring-emerald-200 dark:ring-emerald-800"
+                          : "bg-slate-50 dark:bg-slate-800/60 border-slate-100 dark:border-slate-800"
+                      }`}
+                    >
+                      <span className="text-sm font-extrabold w-7 text-center text-slate-400 dark:text-slate-500">{index + 1}</span>
+                      {leader.photoURL ? (
+                        <img src={leader.photoURL} alt="" className="w-8 h-8 rounded-full object-cover" />
+                      ) : (
+                        <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold ${
+                          isMe ? "bg-emerald-200 dark:bg-emerald-800 text-emerald-800 dark:text-emerald-100" : "bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300"
+                        }`}>
+                          {leader.name?.charAt(0).toUpperCase() || "?"}
+                        </div>
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <p className={`text-sm font-bold truncate ${isMe ? "text-emerald-700 dark:text-emerald-300" : "text-slate-700 dark:text-slate-200"}`}>
+                          {leader.name || "অজানা"}
+                          {isMe && <span className="ml-1 text-xs">(আমি)</span>}
+                        </p>
+                        {isMe && gapToPrev > 0 && (
+                          <p className="text-[11px] font-medium text-amber-600 dark:text-amber-400 mt-0.5">
+                            🔥 মাত্র {gapToPrev} pts বেশি হলেই উপরের র‍্যাঙ্কে যাবেন!
+                          </p>
+                        )}
+                      </div>
+                      <span className={`text-xs font-bold px-2 py-1 rounded-lg shrink-0 ${
+                        isMe ? "bg-emerald-50 dark:bg-emerald-900/40 text-emerald-600 dark:text-emerald-300" : "bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border border-slate-100 dark:border-slate-800"
+                      }`}>
+                        {leader.total_score || 0} pts
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* ✅ আমি যদি লিডারবোর্ডে টপ ৩-এর বাইরে থাকি — মোটিভেশন বার */}
+              {myRank && myRank > 3 && (
+                <div className="flex items-center gap-2 p-3 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 text-white">
+                  <span className="text-lg">🚀</span>
+                  <p className="text-xs font-bold flex-1">
+                    আপনি এখন #{myRank} নম্বরে — আরও পরীক্ষায় অংশ নিয়ে স্কোর বাড়ান, টপ ৩-এ জায়গা করে নিন!
+                  </p>
                 </div>
-              );
-            }) : (
-              <p className="text-sm text-slate-500 dark:text-slate-400 text-center py-4">কোনো ডেটা নেই</p>
-            )}
-          </div>
+              )}
+            </div>
+          ) : (
+            <p className="text-sm text-slate-500 dark:text-slate-400 text-center py-4">কোনো ডেটা নেই</p>
+          )}
         </div>
 
       </div>

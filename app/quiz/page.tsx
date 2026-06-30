@@ -220,6 +220,8 @@ function QuizPageContent() {
   }, [maxWarnings]);
 
   const handleSelectOption = (key: string) => {
+    // ✅ একবার এই প্রশ্নে উত্তর সিলেক্ট হয়ে গেলে আর পরিবর্তন করা যাবে না
+    if (answers[currentIdx] != null) return;
     setAnswers((prev) => ({ ...prev, [currentIdx]: key }));
   };
 
@@ -616,7 +618,10 @@ function QuizPageContent() {
                   <button
                     key={key}
                     onClick={() => handleSelectOption(key)}
-                    className={`w-full flex items-center gap-3 text-left p-4 rounded-xl border-2 transition-all active:scale-[0.99] ${getOptionStyle(key)}`}
+                    disabled={answers[currentIdx] != null}
+                    className={`w-full flex items-center gap-3 text-left p-4 rounded-xl border-2 transition-all active:scale-[0.99] ${
+                      answers[currentIdx] != null ? "cursor-not-allowed" : "cursor-pointer"
+                    } ${getOptionStyle(key)}`}
                   >
                     <span className={`shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-xs uppercase font-bold ${
                       isSelected
